@@ -1,0 +1,5 @@
+# Windows (CRLF) and Mac (LF) share this repo: store everything as LF
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.sqlite3 binary

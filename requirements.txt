@@ -1,0 +1,35 @@
+# Shared by Kartik and Prachi. Pin exact versions with `pip freeze` once
+# both machines install cleanly. browser-use lives in bots/requirements-agents.txt.
+
+# bank API, ingest, /score
+fastapi
+uvicorn[standard]
+pydantic
+pyyaml
+
+# identity: Ed25519 keys, bank-issued mandates, RFC 9421 request signatures
+cryptography
+PyJWT
+http-message-signatures
+tzdata            # Asia/Kolkata day boundary on Windows
+
+# features and models
+numpy
+pandas
+scipy
+scikit-learn
+lightgbm
+
+# dashboard
+streamlit
+plotly
+
+# bots
+httpx
+playwright
+selenium
+playwright-stealth
+python-ghost-cursor
+
+# tests
+pytest
