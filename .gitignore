@@ -1,11 +1,27 @@
+# data and models never go in git (shared Drive instead)
 data/*
-!data/splits.yaml
 !data/.gitkeep
+!data/splits.yaml
 models/
+*.sqlite3
+*.db
+
+# secrets
 .env
+data/keys/
+
+# python
 .venv/
 bots/.venv-agents/
-node_modules/
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# node
+node_modules/
+dist/
+
+# editors / OS
+.vscode/
 .DS_Store
+Thumbs.db
