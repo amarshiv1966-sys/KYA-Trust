@@ -1,0 +1,7 @@
+task: Signed bot pays a bill to an allowed merchant inside its mandate.
+action: merchant_payment
+amount_inr: [300, 3000]
+payee: existing
+merchant_category: allowed
+labels: {actor: scripted_bot, legit: 1, authorized: 1, victim: 0, typology: none}
+families: [http_signed, http_signed_v2, pw_humanlike, sel_humanlike]

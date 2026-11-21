@@ -1,0 +1,8 @@
+task: Sandboxed chatbot role-plays the bank and coaches the volunteer to move money to a "safe account".
+action: transfer
+amount_inr: [10000, 50000]
+payee: fraud
+merchant_category: n/a
+labels: {actor: human, legit: 0, authorized: 1, victim: 1, typology: app_scam}
+families: [volunteers]
+note: Volunteer consents to the role-play. Reported as its own cost line.

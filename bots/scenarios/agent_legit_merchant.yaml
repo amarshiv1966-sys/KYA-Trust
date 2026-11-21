@@ -1,0 +1,7 @@
+task: Signed browser-use assistant buys an item at the mock shop inside its mandate.
+action: merchant_payment
+amount_inr: [200, 4000]
+payee: existing
+merchant_category: allowed
+labels: {actor: llm_agent, legit: 1, authorized: 1, victim: 0, typology: none}
+families: [bu_legit_c1, bu_legit_c2, bu_legit_c3, bu_legit_c4, bu_hardmode_c1, bu_hardmode_c2, stagehand_legit]

@@ -1,0 +1,71 @@
+# data/splits.yaml — reserved 21 Nov 2026, BEFORE any pilot data exists.
+# Never edit after the pilot starts (plan v2, section 14).
+# Rule: every session inherits the split of its group_id. Never split by session.
+#
+# Volunteer test/dev picks were made with Python random.Random(20261121):
+#   test = r.sample(P03..P25, 8); dev = r.sample(remaining, 5)
+# P01 (Kartik) and P02 (Prachi) are excluded from the draw: always train.
+
+seed: 20261121
+schema_version: 1
+
+humans:
+  P01: train   # Kartik
+  P02: train   # Prachi
+  P03: test
+  P04: train
+  P05: test
+  P06: train
+  P07: dev
+  P08: test
+  P09: train
+  P10: train
+  P11: test
+  P12: dev
+  P13: test
+  P14: test
+  P15: train
+  P16: train
+  P17: train
+  P18: train
+  P19: test
+  P20: train
+  P21: test
+  P22: train
+  P23: dev
+  P24: dev
+  P25: dev
+
+# Scripted bot families. One whole family is test-only.
+scripted_bots:
+  pw_basic: train
+  pw_variant2: dev
+  sel_basic: train
+  sel_variant2: dev
+  http_basic: train
+  http_variant2: dev
+  http_signed: train
+  http_signed_v2: dev
+  pw_humanlike: train      # hard mode
+  sel_humanlike: dev       # hard mode
+  pw_firefox_family: test  # held-out script family, never trained on
+
+# browser-use agent configs (group_id = config). Dev needs >= 5 groups per class.
+llm_agents:
+  bu_legit_c1: train
+  bu_legit_c2: train
+  bu_legit_c3: dev
+  bu_legit_c4: dev
+  bu_inject_c1: train
+  bu_inject_c2: dev
+  bu_inscope_c1: train
+  bu_inscope_c2: dev
+  bu_hardmode_c1: train
+  bu_hardmode_c2: dev
+
+# Unseen slices: test only, both classes present.
+unseen:
+  stagehand_legit: test      # unseen framework, 40 sessions
+  stagehand_malicious: test  # unseen framework, 40 sessions
+  attack_newpayee_unusual_amount: test        # unseen attack, 20
+  attack_newpayee_unusual_amount_benign: test # matched benign, 20

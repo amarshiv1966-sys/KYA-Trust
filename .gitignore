@@ -1,0 +1,11 @@
+data/*
+!data/splits.yaml
+!data/.gitkeep
+models/
+.env
+.venv/
+bots/.venv-agents/
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,7 @@
+task: Log in and download statements. No money moves.
+action: read_only
+amount_inr: [0, 0]
+payee: n/a
+merchant_category: n/a
+labels: {actor: scripted_bot, legit: 1, authorized: 1, victim: 0, typology: none}
+families: [pw_basic, pw_variant2, sel_basic, sel_variant2, http_basic, http_variant2, pw_firefox_family]

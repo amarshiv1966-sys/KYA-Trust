@@ -1,0 +1,8 @@
+task: Add a new payee, then send them a first payment.
+action: transfer
+amount_inr: [500, 8000]
+payee: new
+merchant_category: n/a
+labels: {actor: human, legit: 1, authorized: 1, victim: 0, typology: none}
+families: [volunteers]
+note: Matched benign case for APP scam — stops "new payee" alone looking like fraud.

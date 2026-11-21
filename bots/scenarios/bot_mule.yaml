@@ -1,0 +1,8 @@
+task: One script controls many accounts; each receives money and forwards most of it within minutes, from a few devices.
+action: transfer
+amount_inr: [2000, 20000]
+payee: new
+merchant_category: n/a
+labels: {actor: scripted_bot, legit: 0, authorized: 0, victim: 0, typology: mule}
+families: [http_basic, pw_basic]
+note: Scored at the outbound transfer, using earlier state only.

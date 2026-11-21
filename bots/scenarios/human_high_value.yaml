@@ -1,0 +1,7 @@
+task: Send a large legitimate payment (rent, fees) to a saved payee.
+action: transfer
+amount_inr: [15000, 60000]
+payee: existing
+merchant_category: n/a
+labels: {actor: human, legit: 1, authorized: 1, victim: 0, typology: none}
+families: [volunteers]

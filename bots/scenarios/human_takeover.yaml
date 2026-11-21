@@ -1,0 +1,8 @@
+task: Volunteer starts session and browses; an agent takes over and sends a transfer.
+action: transfer
+amount_inr: [5000, 30000]
+payee: new
+merchant_category: n/a
+labels: {actor: llm_agent, legit: 0, authorized: 0, victim: 0, typology: takeover}
+families: [volunteers]
+note: Generator records handover_seq at the moment control passes.

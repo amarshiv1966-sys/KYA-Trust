@@ -1,0 +1,8 @@
+task: Unsigned bot logs in with stolen credentials, adds a payee and drains money.
+action: transfer
+amount_inr: [5000, 40000]
+payee: new
+merchant_category: n/a
+labels: {actor: scripted_bot, legit: 0, authorized: 0, victim: 0, typology: none}
+families: [pw_basic, pw_variant2, sel_basic, sel_variant2, http_basic, http_variant2, pw_humanlike, sel_humanlike, pw_firefox_family]
+note: typology none = plain credential-abuse bot, not one of the documented agentic typologies.

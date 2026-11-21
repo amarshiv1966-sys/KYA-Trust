@@ -1,0 +1,7 @@
+task: Log in, check balance, send money to a saved payee.
+action: transfer
+amount_inr: [200, 5000]
+payee: existing
+merchant_category: n/a
+labels: {actor: human, legit: 1, authorized: 1, victim: 0, typology: none}
+families: [volunteers]
