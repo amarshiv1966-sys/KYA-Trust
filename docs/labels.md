@@ -32,6 +32,6 @@ The split column is copied from `data/splits.yaml` by `group_id`; it is never ch
 - `victim = 1` ⇒ `actor = human`, `legit = 0`, `typology = app_scam`
 - `typology = takeover` ⇒ `handover_seq` is set and `< decision_seq`
 - `typology = in_scope_compromise` ⇒ `authorized = 1`, `legit = 0`
-- `typology = none` ⇒ `legit = 1`
+- `typology = none` with `legit = 0` is allowed: a plain credential-abuse bot, not one of the five agentic typologies
 - `unseen_framework = 1` or `unseen_attack = 1` ⇒ `split = test`
 - `group_id` must exist in splits.yaml
