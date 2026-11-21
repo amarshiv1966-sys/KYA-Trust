@@ -53,6 +53,26 @@ def make_customer(cid, pool, rng):
     return rows
 
 
+def summarise(rows, now_ms):
+    """Turn one customer's rows into the `history` object that decision_context carries
+    (docs/schema.md section 2: payment_count, median/mad amount, payees_seen, categories_seen, last_payment_ts_ms)."""
+    amounts = sorted(r["amount_paise"] for r in rows)
+    if not amounts:
+        return {"payment_count": 0, "median_amount_paise": 0, "mad_amount_paise": 0,
+                "payees_seen": [], "categories_seen": [], "last_payment_ts_ms": None}
+    median = float(np.median(amounts))
+    mad = float(np.median([abs(a - median) for a in amounts]))
+    last_days_ago = min(r["days_ago"] for r in rows)
+    return {
+        "payment_count": len(rows),
+        "median_amount_paise": int(median),
+        "mad_amount_paise": int(mad),
+        "payees_seen": sorted({r["payee_id"] for r in rows}),
+        "categories_seen": sorted({r["merchant_category"] for r in rows}),
+        "last_payment_ts_ms": int(now_ms - last_days_ago * 86400 * 1000),
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--customers", type=int, default=200)

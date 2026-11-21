@@ -6,7 +6,7 @@ The split column is copied from `data/splits.yaml` by `group_id`; it is never ch
 | Column | Type | Allowed values | Filled by | Meaning |
 | --- | --- | --- | --- | --- |
 | session_id | str | `s_` + id | generator / recorder | Matches the log file name |
-| decision_seq | int | ≥ 0 | generator / recorder | `seq` of the one scored action (transfer, merchant payment or add payee). Read-only sessions: seq of the last event |
+| decision_seq | int | ≥ 0 | generator / recorder | `seq` of the `transaction` event (schema.md section 2). Read-only sessions have one too (`statement_download`) |
 | actor | str | human, scripted_bot, llm_agent | generator / recorder | Who started the scored action (not who started the session) |
 | legit | int | 0, 1 | scenario | 1 = human acting for themselves, or agent within the customer's authorisation |
 | authorized | int | 0, 1 | scenario | 1 = valid mandate or recorded consent covers the action. Can be 1 with legit = 0 (compromised agent) |
@@ -19,9 +19,9 @@ The split column is copied from `data/splits.yaml` by `group_id`; it is never ch
 | unseen_framework | int | 0, 1 | generator | Stagehand run |
 | unseen_attack | int | 0, 1 | generator | New payee, allowed category, unusual amount |
 | channel | str | browser, api | generator / recorder | |
-| device_class | str | desktop, laptop, phone | recorder | Coarse only |
-| input_type | str | mouse, touchpad, touch, keyboard_only, none | recorder | |
-| browser | str | chromium, firefox, webkit, chrome, safari, none | recorder | |
+| device_class | str | desktop, laptop, phone, tablet, unknown | recorder | Same values as schema.md `client.device_class` |
+| input_type | str | mouse, touch, keyboard_only, unknown | recorder | Same values as schema.md `client.input_type` |
+| browser | str | chrome, edge, firefox, safari, none, other | recorder | Same values as schema.md `client.browser_family` |
 | framework | str | none, playwright, selenium, httpx, browser_use, stagehand | generator | |
 | config_id | str | | generator | Exact bot/agent config |
 | seed | int or empty | | generator | Empty for humans and LLM runs that can't be replayed |
