@@ -25,3 +25,6 @@ dist/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# copies the Claude app drops into the folder
+Claude outputs/
