@@ -9,7 +9,7 @@ import Payees from './pages/Payees.jsx'
 import Transfer from './pages/Transfer.jsx'
 import Merchant from './pages/Merchant.jsx'
 import Mandate from './pages/Mandate.jsx'
-import Placeholder from './pages/Placeholder.jsx'
+import Shop from './pages/Shop.jsx'
 import { TaskCard } from './ui.jsx'
 
 // Every clickable element carries a data-kya-id from contracts/element_ids.md.
@@ -89,7 +89,7 @@ export default function App() {
           <Route path="/transfer" element={<Transfer />} />
           <Route path="/merchant" element={<Merchant />} />
           <Route path="/mandate" element={<Mandate />} />
-          <Route path="/shop" element={<Placeholder page="shop" step="K10" />} />
+          <Route path="/shop" element={<Shop />} />
           <Route path="/login" element={<Navigate to="/" />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>

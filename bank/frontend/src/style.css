@@ -34,7 +34,7 @@ a { color: var(--green); }
 
 /* ---------- frame: sidebar + content ---------- */
 
-.frame { display: grid; grid-template-columns: 236px 1fr; min-height: 100vh; }
+.frame { display: grid; grid-template-columns: 236px 1fr; min-height: 100vh; background: linear-gradient(to right, var(--green) 236px, var(--page) 236px); }
 
 .sidebar {
   background: var(--green); color: #fff; padding: 24px 14px;
@@ -157,6 +157,18 @@ td .what { color: var(--muted); font-size: 13px; }
 .in { color: var(--in); }
 .table-scroll { overflow-x: auto; }
 
+/* ---------- shop ---------- */
+
+.product { display: grid; grid-template-columns: 1fr auto auto; gap: 16px; align-items: center; padding: 13px 0; border-bottom: 1px solid #EEF2F1; }
+.product:last-child { border-bottom: 0; }
+.product .meta { color: var(--muted); font-size: 13px; }
+.product .price { font-weight: 600; }
+.product button { padding: 7px 12px; font-size: 14px; }
+.cart-line { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; font-size: 14px; }
+.cart-line.total { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 12px; font-weight: 650; font-size: 15px; }
+.review { margin-top: 20px; max-width: 640px; }
+.review p { font-size: 14px; }
+
 /* ---------- assistants (mandates) ---------- */
 
 select[multiple] { padding: 6px; }
@@ -182,7 +194,7 @@ select[multiple] { padding: 6px; }
 /* ---------- small screens ---------- */
 
 @media (max-width: 860px) {
-  .frame { grid-template-columns: 1fr; }
+  .frame { grid-template-columns: 1fr; background: var(--page); }
   .sidebar { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; padding: 12px; gap: 2px; }
   .brand { padding: 0 10px 0 4px; width: 100%; margin-bottom: 8px; }
   .sidebar a { padding: 7px 10px; font-size: 14px; }
