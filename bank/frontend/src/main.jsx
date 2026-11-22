@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import App from './App.jsx'
 import './style.css'
+import { startTelemetry } from './telemetry.js'
 
 // Device cookie: a random id so the bank can count how many accounts one
 // device has used. It is not a fingerprint. Our pages set it; API-only
@@ -17,6 +18,7 @@ if (!document.cookie.includes('kya_dev=')) {
 fetch('/api/session/start', { method: 'POST' })
   .catch(() => {})
   .finally(() => {
+    startTelemetry() // after the session exists, so the socket joins it
     createRoot(document.getElementById('root')).render(
       <BrowserRouter>
         <App />

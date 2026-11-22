@@ -155,7 +155,9 @@ def behaviour_features(events, prefix=""):
     f["api_signed_frac"] = (sum(bool(a["data"]["headers"].get("signature")) for a in apis) / len(apis)) if apis else -1.0
 
     # ---- environment flags (only the ones the plan lists; no OS or device class)
-    c0 = events[0]["client"] if events else {}
+    # device info from the browser's own first event; API-only sessions have none, so fall back
+    first = next((e for e in events if e["source"] == "client"), events[0] if events else None)
+    c0 = first["client"] if first else {}
     wd = c0.get("webdriver")
     f["env_webdriver"] = 1.0 if wd else 0.0              # browser says it is automated
     f["env_webdriver_known"] = 0.0 if wd is None else 1.0

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Link, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
+import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { api } from './api.js'
+import { flushTelemetry, restartTelemetry, telemetryPage } from './telemetry.js'
 import Login from './pages/Login.jsx'
 import Home from './pages/Home.jsx'
 import Statements from './pages/Statements.jsx'
@@ -34,6 +35,14 @@ export default function App() {
   // null = not logged in; the server is the real judge, this only drives the UI
   const [user, setUser] = useState(() => JSON.parse(sessionStorage.getItem('kya_user') || 'null'))
   const navigate = useNavigate()
+  const location = useLocation()
+
+  // One page_view per real page. Skip the in-between paths that only
+  // redirect (for example "/" before login, which jumps to "/login").
+  useEffect(() => {
+    const onLogin = location.pathname === '/login'
+    if (user ? !onLogin : onLogin) telemetryPage(location.pathname)
+  }, [location.pathname, user])
 
   useEffect(() => {
     if (user) sessionStorage.setItem('kya_user', JSON.stringify(user))
@@ -41,9 +50,11 @@ export default function App() {
   }, [user])
 
   async function logout() {
+    await flushTelemetry() // the logout click belongs to the old session
     try { await api('POST', '/api/logout') } catch { /* already logged out */ }
     // a fresh anonymous session, so the next login page is recorded too
     try { await api('POST', '/api/session/start') } catch { /* bank offline */ }
+    await restartTelemetry() // reconnect the socket to the new session
     setUser(null)
     navigate('/login')
   }

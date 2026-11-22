@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api } from '../api.js'
 import { formatPaise } from '../money.js'
+import { flushTelemetry } from '../telemetry.js'
 
 export default function Statements() {
   const [range, setRange] = useState('30')
@@ -17,7 +18,8 @@ export default function Statements() {
     }
   }
 
-  function download() {
+  async function download() {
+    await flushTelemetry() // a download is a sensitive action: behaviour first
     // the browser downloads the CSV with the session cookie attached
     window.location.href = `/api/statements/download?range=${range}`
   }

@@ -55,6 +55,8 @@ Only clicks on elements with a `data-kya-id` are recorded.
 | `offset_x`, `offset_y` | number | Click position minus the element's centre. `0, 0` is the exact centre |
 | `press_ms` | int or null | Time between mouse-down and mouse-up. `null` when the browser fired a click with no press (typical of scripts) |
 
+A click with no pointer press behind it (a script's `el.click()`, or Enter/Space on a button) has no real position: `x`, `y` are the element's centre, `offset_x`, `offset_y` are `0`, and `press_ms` is `null`.
+
 ### `keystroke` (client)
 
 The key itself is **never** recorded. Password fields produce no events at all.
@@ -82,6 +84,8 @@ Sent after `telemetry.js` has flushed its buffer, just before the form's request
 | `fields_filled` | int | Fields with a value when submitted |
 | `fields_without_keys` | int | Filled fields that got no `keystroke` events (pasted, autofilled or set by a script) |
 | `paste_count` | int | Paste actions on this form |
+
+Password fields (`login.password`, `stepup.pin`) are left out of `fields_filled` and `fields_without_keys`, because they never produce key events.
 
 ### `api_call` (server)
 
@@ -133,7 +137,7 @@ Written by the gate right after the `transaction` event and before scoring. It f
 
 ## 3. The `client` object
 
-Sent by the browser on every client event. The server fills it for API-only requests from the request itself. Coarse classes only: nothing that identifies a person.
+Sent by the browser on every client event. The server fills it for API-only requests from the request itself. A browser session's first event is the server's `session/start` record, written before the browser has sent anything, so **read device fields from the first event with `source: "client"`** and fall back to the first event only when there is none (API-only sessions). Coarse classes only: nothing that identifies a person.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -203,3 +207,4 @@ The allowed values of every state field, and the text of every reason code, live
 
 - **v1 (22 Nov 2026):** first version.
 - **v1, 23 Nov 2026 (K6):** `api_call.status` is `null` (written on arrival). Sessions start at `/api/session/start`, before login. No change to any field name, so `schema_version` stays 1.
+- **v1, 23 Nov 2026 (K7):** `telemetry.js` sends client events. Clarified: clicks with no press, password fields in `form_submit` counts, and which event to read device fields from. No field changes.

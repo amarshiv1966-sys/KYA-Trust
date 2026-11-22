@@ -33,5 +33,6 @@ def build_features(events, context):
 
 def device_fields(events):
     # Coarse device fields kept OUT of the model. Only eval/ uses them, for the device-only shortcut check.
-    c = events[0]["client"] if events else {}
+    first = next((e for e in events if e["source"] == "client"), events[0] if events else None)
+    c = first["client"] if first else {}
     return {k: c.get(k) for k in ("device_class", "os_family", "browser_family", "input_type")}
