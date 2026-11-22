@@ -109,3 +109,20 @@ def test_login_page_never_reuses_an_old_logged_in_session(client):
     assert login(client, "cust_0002") == fresh              # login binds the session the recorder is on
     # a reload while logged in keeps the same session
     assert client.post("/api/session/start", json={"anonymous": False}).json()["session_id"] == fresh
+
+
+def test_task_card_is_shown_but_never_logged(client, tmp_path, monkeypatch):
+    import json as _json
+    import bank.backend.app as bank_app
+    from bank.backend.ingest import LOG
+    monkeypatch.setattr(bank_app, "VOLUNTEER_DIR", tmp_path / "active")
+    (tmp_path / "active").mkdir()
+    (tmp_path / "active" / "P04.json").write_text(_json.dumps(
+        {"volunteer": "P04", "user_id": "cust_0001", "card": ["Send Rs 500 to Asha"]}))
+    assert client.get("/api/task").json()["card"] is None          # not logged in: no card
+    sid = login(client, "cust_0001")
+    assert client.get("/api/task").json()["card"] == ["Send Rs 500 to Asha"]
+    login(client, "cust_0002")
+    assert client.get("/api/task").json()["card"] is None          # someone else's card is never shown
+    paths = [e["data"]["path"] for e in LOG.read(sid) if e["type"] == "api_call"]
+    assert "/api/task" not in paths                                 # only volunteers would have it: a shortcut

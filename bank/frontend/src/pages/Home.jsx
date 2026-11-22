@@ -46,13 +46,13 @@ export default function Home({ name, onExpired }) {
 
   return (
     <div data-kya-page="home">
-      <p className="hello">{greeting()}, {name.split(' ')[0]}</p>
+      <p className="hello">{greeting()}, {name.startsWith('Volunteer') ? name : name.split(' ')[0]}</p>
       <div className="balance-block">
         <div>
           <div className="balance-label">Available balance</div>
           {/* bots read this text: keep it exactly the formatted amount */}
           <div className="balance" data-kya-id="home.balance">{balance === null ? '…' : formatPaise(balance)}</div>
-          <div className="account-line">Savings account {account && `ending ${account.slice(-4).toUpperCase()}`}</div>
+          <div className="account-line">Savings account {account && `ending ${account.replace(/\D/g, '').padStart(4, '0').slice(-4)}`}</div>
         </div>
         <div className="quick">
           <button data-kya-id="home.send" onClick={() => navigate('/transfer')}>Send money</button>

@@ -6,9 +6,14 @@ The bank must be running (uvicorn + npm run dev).
     python tools/volunteer.py next                          which ID to give the next new person
     python tools/volunteer.py start P07 normal_transfer     make P07's account, print the task card
     python tools/volunteer.py start P07 new_payee --phone   flags: --phone, --keyboard-only, --autofill
-    python tools/volunteer.py finish                        find the session, write the label row
-    python tools/volunteer.py cancel                        drop the current recording (no row)
-    python tools/volunteer.py status                        sessions so far, by split
+    python tools/volunteer.py finish P07                    find P07's session, write the label row
+    python tools/volunteer.py cancel P07                    drop P07's recording (no row)
+    python tools/volunteer.py status                        sessions so far, by split, and who is recording
+    python tools/volunteer.py ip                            the address other devices open
+
+Several volunteers can record at once, each on their own laptop or phone on
+the same Wi-Fi or hotspot as this PC. Each sees their own task card in the
+bank after logging in. (finish/cancel without an ID works when only one runs.)
 
 Tasks: normal_transfer, new_payee, high_value (scenarios in bots/scenarios/human_*.yaml).
 app_scam and takeover need the scam chatbot and the takeover agent, built later.
@@ -30,7 +35,34 @@ from bank.backend.ingest import raw_dir  # noqa: E402
 from bank.backend.seed import FIRST, LAST, PASSWORD, hash_password, seed_history  # noqa: E402
 from bots.common import GENERATOR_VERSION, LABEL_COLUMNS, LABELS_CSV, check_row, load_scenario, load_splits, write_label  # noqa: E402
 
-ACTIVE = ROOT / "data" / "volunteer_active.json"
+# One file per running recording, so several volunteers can record at once.
+# The bank reads these to show each volunteer their own task card.
+ACTIVE_DIR = ROOT / "data" / "volunteer_active"
+
+
+def active_path(vid):
+    return ACTIVE_DIR / f"{vid}.json"
+
+
+def running():
+    if not ACTIVE_DIR.exists():
+        return []
+    return [json.loads(p.read_text()) for p in sorted(ACTIVE_DIR.glob("P*.json"))]
+
+
+def pick_running(vid):
+    """The recording to finish or cancel: the one named, or the only one."""
+    now = running()
+    if vid:
+        match = [a for a in now if a["volunteer"] == vid]
+        if not match:
+            sys.exit(f"no recording is running for {vid}")
+        return match[0]
+    if not now:
+        sys.exit("no recording is running")
+    if len(now) > 1:
+        sys.exit("several recordings are running; say which: " + ", ".join(a["volunteer"] for a in now))
+    return now[0]
 TASKS = {"normal_transfer": "human_normal_transfer", "new_payee": "human_new_payee",
          "high_value": "human_high_value"}
 LATER = {"app_scam": "the scam chatbot page", "takeover": "the takeover agent"}
@@ -39,18 +71,18 @@ CARDS = {
     "normal_transfer": [
         "Log in with the username and password above.",
         "Look at your balance on the home page.",
-        "Go to Transfer and send Rs {amount} to {payee}.",
+        "Go to Send money and send Rs {amount} to {payee}.",
         "Use the bank the way you normally would. There is no rush.",
     ],
     "new_payee": [
         "Log in with the username and password above.",
         "Go to Payees and add a new payee: any name, a 12-digit account number, IFSC KYAB0001234.",
-        "Then go to Transfer and send Rs {amount} to that new payee.",
+        "Then go to Send money and send Rs {amount} to that new payee.",
         "Use the bank the way you normally would. There is no rush.",
     ],
     "high_value": [
         "Log in with the username and password above.",
-        "This is a big payment, like rent or fees: go to Transfer and send Rs {amount} to {payee}.",
+        "This is a big payment, like rent or fees: go to Send money and send Rs {amount} to {payee}.",
         "The bank may ask for an extra check. That is expected; just tell us what it says.",
         "Use the bank the way you normally would. There is no rush.",
     ],
@@ -120,10 +152,28 @@ def cmd_next():
     print("P01 = Kartik, P02 = Prachi (always train)")
 
 
+def lan_urls():
+    """Addresses other devices on the same Wi-Fi or hotspot can open."""
+    import socket
+    ips = set()
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.connect(("10.255.255.255", 1))     # no packet is sent; it only picks the outgoing interface
+        ips.add(probe.getsockname()[0])
+        probe.close()
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ips.add(info[4][0])
+    except OSError:
+        pass
+    return [f"http://{ip}:5173" for ip in sorted(ips) if not ip.startswith("127.")]
+
+
 def cmd_start(vid, task, flags):
-    if ACTIVE.exists():
-        sys.exit(f"a recording is already running ({json.loads(ACTIVE.read_text())['volunteer']}): "
-                 "finish or cancel it first")
+    if active_path(vid).exists():
+        sys.exit(f"{vid} is already recording: finish or cancel it first")
     if task in LATER:
         sys.exit(f"{task} needs {LATER[task]}, which is not built yet")
     if task not in TASKS:
@@ -142,24 +192,29 @@ def cmd_start(vid, task, flags):
     amount = rng.randint(low // 10, high // 10) * 10   # round tens, like a person would pick
     payee = rng.choice(payees)
 
-    ACTIVE.parent.mkdir(parents=True, exist_ok=True)
-    ACTIVE.write_text(json.dumps({"volunteer": vid, "task": task, "user_id": user_id, "started_ms": now_ms(),
-                                  "flags": flags, "amount_inr": amount}))
-    split = load_splits()[vid]
-    print(f"\nRecording {vid} ({split}), task {task}. Account: username {vid.lower()}, password {PASSWORD}")
-    if "--phone" in flags:
-        print("Phone: open http://<this computer's IP>:5173 on the same Wi-Fi (start uvicorn with --host 0.0.0.0)")
-    print("\n----- TASK CARD (show this to the volunteer) -----")
-    print(f"Username: {vid.lower()}    Password: {PASSWORD}\n")
-    for i, line in enumerate(CARDS[task], 1):
-        print(f"{i}. {line.format(amount=f'{amount:,}', payee=payee)}")
+    lines = [line.format(amount=f"{amount:,}", payee=payee) for line in CARDS[task]]
     if "--keyboard-only" in flags:
-        print("Please use only the keyboard this time (Tab, Enter, arrow keys), no mouse.")
+        lines.append("This time, please use only the keyboard (Tab, Enter, arrow keys), no mouse or touchpad.")
     if "--autofill" in flags:
-        print("Let the browser fill in the username and password if it offers to.")
-    print("---------------------------------------------------")
-    print("\nOpen a fresh browser window at http://localhost:5173 and hand over.")
-    print("When they are done:  python tools/volunteer.py finish")
+        lines.append("Let the browser fill in the username and password if it offers to.")
+
+    ACTIVE_DIR.mkdir(parents=True, exist_ok=True)
+    active_path(vid).write_text(json.dumps({
+        "volunteer": vid, "task": task, "user_id": user_id, "started_ms": now_ms(),
+        "flags": flags, "amount_inr": amount, "card": lines[1:],   # the login line is not needed once logged in
+    }))
+    split = load_splits()[vid]
+    print(f"\nRecording {vid} ({split}), task {task}.")
+    print(f"They log in with   username {vid.lower()}   password {PASSWORD}")
+    print("Their task card appears in the bank after they log in.\n")
+    for i, line in enumerate(lines, 1):
+        print(f"  {i}. {line}")
+    urls = lan_urls()
+    print("\nOn their own laptop or phone (same Wi-Fi or hotspot as this PC), open:")
+    for u in urls or ["http://<this PC's IP>:5173"]:
+        print(f"  {u}")
+    print("On this PC: http://localhost:5173 in a fresh tab.")
+    print(f"When they are done:  python tools/volunteer.py finish {vid}")
 
 
 def find_session(active, action):
@@ -181,15 +236,13 @@ def find_session(active, action):
     return best
 
 
-def cmd_finish():
-    if not ACTIVE.exists():
-        sys.exit("no recording is running")
-    active = json.loads(ACTIVE.read_text())
+def cmd_finish(vid=None):
+    active = pick_running(vid)
     scenario = load_scenario(TASKS[active["task"]])
     found = find_session(active, scenario["action"])
     if found is None:
         sys.exit(f"no {scenario['action']} found for {active['volunteer']} since the start. "
-                 "Did they press Send? (or: python tools/volunteer.py cancel)")
+                 f"Did they press Send? (or: python tools/volunteer.py cancel {active['volunteer']})")
     sid, decision_seq, events = found
     client = next((e["client"] for e in events if e["source"] == "client"), {})
     flags = active["flags"]
@@ -215,7 +268,7 @@ def cmd_finish():
     if any(r["session_id"] == sid for r in labelled_rows()):
         sys.exit(f"{sid} already has a label row")
     write_label(row)
-    ACTIVE.unlink()
+    active_path(active["volunteer"]).unlink()
     behaviour = sum(e["type"] in ("click", "keystroke", "pointer_move", "scroll") for e in events)
     print(f"labelled {sid}: {vid} ({row['split']}), {active['task']}, decision at seq {decision_seq}, "
           f"{len(events)} events ({behaviour} behaviour)")
@@ -223,12 +276,10 @@ def cmd_finish():
         print("WARNING: very little behaviour recorded. Was telemetry running (npm run dev, not a cached page)?")
 
 
-def cmd_cancel():
-    if ACTIVE.exists():
-        ACTIVE.unlink()
-        print("cancelled; nothing written")
-    else:
-        print("no recording is running")
+def cmd_cancel(vid=None):
+    active = pick_running(vid)
+    active_path(active["volunteer"]).unlink()
+    print(f"cancelled {active['volunteer']}; nothing written")
 
 
 def cmd_status():
@@ -244,8 +295,7 @@ def cmd_status():
         tasks[r["config_id"]] = tasks.get(r["config_id"], 0) + 1
     if tasks:
         print("tasks: " + ", ".join(f"{k} {v}" for k, v in sorted(tasks.items())))
-    if ACTIVE.exists():
-        a = json.loads(ACTIVE.read_text())
+    for a in running():
         mins = (now_ms() - a["started_ms"]) / 60000
         print(f"recording now: {a['volunteer']} {a['task']} ({mins:.0f} min)")
 
@@ -261,9 +311,11 @@ def main(argv):
     elif cmd == "start" and len(args) == 2:
         cmd_start(args[0].upper(), args[1], flags)
     elif cmd == "finish":
-        cmd_finish()
+        cmd_finish(args[0].upper() if args else None)
     elif cmd == "cancel":
-        cmd_cancel()
+        cmd_cancel(args[0].upper() if args else None)
+    elif cmd == "ip":
+        print("\n".join(lan_urls()) or "no network address found (connect to Wi-Fi or a hotspot)")
     elif cmd == "status":
         cmd_status()
     else:

@@ -16,9 +16,11 @@ payment gate replaces execute_payment(): score first, then commit.
 """
 
 import csv
+import json
 import io
 import re
 import secrets
+from pathlib import Path
 
 import jwt
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
@@ -298,6 +300,35 @@ def list_payees(sess=Depends(current_session), conn=Depends(get_db)):
 def list_merchants(sess=Depends(logged_if_session), conn=Depends(get_db)):
     rows = conn.execute("SELECT merchant_id, name, category FROM merchants ORDER BY name").fetchall()
     return {"merchants": [dict(r) for r in rows]}
+
+
+# ---------- volunteer task card ----------
+
+VOLUNTEER_DIR = Path(__file__).resolve().parents[2] / "data" / "volunteer_active"
+
+
+@app.get("/api/task")
+def volunteer_task(request: Request, conn=Depends(get_db)):
+    """The task card for a volunteer who is being recorded right now
+    (written by tools/volunteer.py start), or {"card": null}.
+
+    Deliberately NOT written to the session log: only volunteer sessions
+    would contain it, and the model could learn "asked for a task card =
+    human" instead of real behaviour. Every logged-in page asks for it, so
+    it still cannot tell bots and people apart by its absence in the log."""
+    sid = session_id_of(request)
+    row = conn.execute("SELECT user_id FROM sessions WHERE session_id = ? AND ended_ms IS NULL",
+                       (sid,)).fetchone() if sid else None
+    if row is None or row["user_id"] is None or not VOLUNTEER_DIR.exists():
+        return {"card": None}
+    for f in VOLUNTEER_DIR.glob("P*.json"):
+        try:
+            a = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if a.get("user_id") == row["user_id"]:
+            return {"card": a.get("card"), "volunteer": a.get("volunteer")}
+    return {"card": None}
 
 
 # ---------- agents and mandates (K8) ----------

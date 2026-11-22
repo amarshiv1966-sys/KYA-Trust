@@ -10,6 +10,7 @@ import Transfer from './pages/Transfer.jsx'
 import Merchant from './pages/Merchant.jsx'
 import Mandate from './pages/Mandate.jsx'
 import Placeholder from './pages/Placeholder.jsx'
+import { TaskCard } from './ui.jsx'
 
 // Every clickable element carries a data-kya-id from contracts/element_ids.md.
 // Bots click by these ids, and telemetry.js (K7) records only these elements.
@@ -80,6 +81,7 @@ export default function App() {
     <div className="frame">
       <Nav name={user.name} onLogout={logout} />
       <main className="content">
+        <TaskCard />
         <Routes>
           <Route path="/" element={<Home name={user.name} onExpired={() => setUser(null)} />} />
           <Route path="/statements" element={<Statements />} />

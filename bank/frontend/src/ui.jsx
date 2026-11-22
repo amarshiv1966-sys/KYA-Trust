@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react'
+
 // Small shared pieces for the pages. Kept plain on purpose: the bank should
 // feel ordinary, so volunteers use it the way they use their own bank.
 
@@ -61,4 +63,31 @@ export function groupByDay(rows) {
     groups[groups.length - 1].rows.push(r)
   }
   return groups
+}
+
+// The volunteer's task, from `tools/volunteer.py start`. Shown only while
+// that volunteer is being recorded. Polled every few seconds so a card
+// started after login still appears. The bank does not log these requests.
+export function TaskCard() {
+  const [task, setTask] = useState(null)
+  const [open, setOpen] = useState(true)
+
+  useEffect(() => {
+    let alive = true
+    const load = () => fetch('/api/task').then((r) => r.json()).then((d) => alive && setTask(d.card ? d : null)).catch(() => {})
+    load()
+    const t = setInterval(load, 5000)
+    return () => { alive = false; clearInterval(t) }
+  }, [])
+
+  if (!task) return null
+  return (
+    <aside className="task" aria-label="Your task">
+      <div className="task-head">
+        <strong>Your task</strong>
+        <button className="link" onClick={() => setOpen(!open)}>{open ? 'Hide' : 'Show'}</button>
+      </div>
+      {open && <ol>{task.card.map((line) => <li key={line}>{line}</li>)}</ol>}
+    </aside>
+  )
 }
