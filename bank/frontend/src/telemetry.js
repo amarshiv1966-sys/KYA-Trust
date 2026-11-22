@@ -31,6 +31,7 @@ const PAGES = {
 let ws = null
 let wsReady = false
 let started = false
+let sessionId = null            // the session the socket is connected to
 let buffer = []                  // events not yet put in a batch
 const unacked = new Map()        // batch_id -> batch, until the server acks it
 const ackWaiters = new Map()     // batch_id -> resolve()
@@ -306,9 +307,10 @@ function connect() {
 
 // ---------- public ----------
 
-export function startTelemetry() {
+export function startTelemetry(sid) {
   if (started) return
   started = true
+  sessionId = sid || null
   client = readClient()
   scrollAcc.x = window.scrollX
   scrollAcc.y = window.scrollY
@@ -352,9 +354,18 @@ export async function flushTelemetry() {
 
 // After logout the server starts a new session. The socket belongs to the old
 // one, so send what is left there, then reconnect for the new session.
-export async function restartTelemetry() {
+// After login, the bank answers with the session it bound. If that is not
+// the one the socket is on, move the socket there, so behaviour and the
+// payment land in the same session log.
+export async function followSession(sid) {
+  if (!started || !sid || sid === sessionId) return
+  await restartTelemetry(sid)
+}
+
+export async function restartTelemetry(sid) {
   if (!started) return
   await flushTelemetry()
+  sessionId = sid || null
   const old = ws
   ws = null
   wsReady = false

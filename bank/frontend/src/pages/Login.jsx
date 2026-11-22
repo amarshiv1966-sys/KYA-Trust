@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api.js'
-import { flushTelemetry } from '../telemetry.js'
+import { flushTelemetry, followSession } from '../telemetry.js'
 
 export default function Login({ onLogin }) {
   const [username, setUsername] = useState('')
@@ -15,6 +15,7 @@ export default function Login({ onLogin }) {
     try {
       await flushTelemetry()
       const user = await api('POST', '/api/login', { username, password })
+      await followSession(user.session_id) // safety net: same session for behaviour and payments
       onLogin(user)
       navigate('/')
     } catch (err) {

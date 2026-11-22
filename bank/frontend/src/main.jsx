@@ -15,10 +15,18 @@ if (!document.cookie.includes('kya_dev=')) {
 
 // Start (or resume) a session before anything renders, so telemetry from the
 // login page already belongs to the session the user is about to log into.
-fetch('/api/session/start', { method: 'POST' })
-  .catch(() => {})
-  .finally(() => {
-    startTelemetry() // after the session exists, so the socket joins it
+// A page with nobody logged in (in this tab) asks for an anonymous session,
+// so an old logged-in session left open in the browser is not reused.
+const loggedIn = Boolean(sessionStorage.getItem('kya_user'))
+fetch('/api/session/start', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ anonymous: !loggedIn }),
+})
+  .then((r) => r.json())
+  .catch(() => ({}))
+  .then((d) => {
+    startTelemetry(d.session_id) // after the session exists, so the socket joins it
     createRoot(document.getElementById('root')).render(
       <BrowserRouter>
         <App />

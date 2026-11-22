@@ -54,8 +54,9 @@ export default function App() {
     await flushTelemetry() // the logout click belongs to the old session
     try { await api('POST', '/api/logout') } catch { /* already logged out */ }
     // a fresh anonymous session, so the next login page is recorded too
-    try { await api('POST', '/api/session/start') } catch { /* bank offline */ }
-    await restartTelemetry() // reconnect the socket to the new session
+    let fresh = null
+    try { fresh = await api('POST', '/api/session/start', { anonymous: true }) } catch { /* bank offline */ }
+    await restartTelemetry(fresh?.session_id) // reconnect the socket to the new session
     setUser(null)
     navigate('/login')
   }

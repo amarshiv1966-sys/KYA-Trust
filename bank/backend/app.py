@@ -142,8 +142,20 @@ async def logged_if_session(request: Request, conn=Depends(get_db)):
 @app.post("/api/session/start")
 async def session_start(request: Request, response: Response, conn=Depends(get_db)):
     """Our pages call this on load: reuse the open session, or start an
-    anonymous one (no user yet) so telemetry has somewhere to go."""
+    anonymous one (no user yet) so telemetry has somewhere to go.
+
+    Body {"anonymous": true} means the page is showing the login screen. If
+    the cookie still points to a logged-in session (a new tab, or someone
+    who never logged out), that session is ended and a fresh one starts, so
+    the login that follows binds the SAME session the recorder is on."""
     sess = open_session(conn, request.cookies.get(COOKIE))
+    try:
+        wants_anonymous = bool((await request.json()).get("anonymous"))
+    except Exception:
+        wants_anonymous = False
+    if sess is not None and wants_anonymous and sess["user_id"] is not None:
+        conn.execute("UPDATE sessions SET ended_ms = ? WHERE session_id = ?", (now_ms(), sess["session_id"]))
+        sess = None
     if sess is None:
         sid = new_session_id()
         device_id = request.cookies.get("kya_dev")

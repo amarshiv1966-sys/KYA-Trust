@@ -98,3 +98,14 @@ def test_statement_download_is_csv(client):
     r = client.get("/api/statements/download?range=30")
     assert r.status_code == 200
     assert r.text.startswith("txn_id,")
+
+
+def test_login_page_never_reuses_an_old_logged_in_session(client):
+    # a browser left logged in as cust_0001 opens a new tab showing the login page
+    old = login(client, "cust_0001")
+    fresh = client.post("/api/session/start", json={"anonymous": True}).json()["session_id"]
+    assert fresh != old                                     # the old session is not reused...
+    assert client.get("/api/balance", headers={"X-KYA-Session": old}).status_code == 401   # ...it is ended
+    assert login(client, "cust_0002") == fresh              # login binds the session the recorder is on
+    # a reload while logged in keeps the same session
+    assert client.post("/api/session/start", json={"anonymous": False}).json()["session_id"] == fresh
