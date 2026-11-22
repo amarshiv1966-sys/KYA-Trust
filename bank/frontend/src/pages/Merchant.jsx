@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api.js'
 import { formatPaise, rupeesToPaise } from '../money.js'
 import { flushTelemetry } from '../telemetry.js'
+import { outcome } from '../decision.js'
 
 export default function Merchant() {
   const [merchants, setMerchants] = useState([])
@@ -22,8 +23,8 @@ export default function Merchant() {
     try {
       await flushTelemetry()
       const d = await api('POST', '/api/merchant/pay', { merchant_id: merchantId, amount_paise: paise, currency: 'INR' })
-      setMsg({ ok: `Paid ${formatPaise(paise)}. New balance ${formatPaise(d.balance_paise)}`, error: '' })
-      setAmount('')
+      setMsg(outcome(d, `Paid ${formatPaise(paise)}. New balance ${formatPaise(d.balance_paise)}`))
+      if (d.status === 'executed') setAmount('')
     } catch (err) {
       setMsg({ ok: '', error: err.message })
     }

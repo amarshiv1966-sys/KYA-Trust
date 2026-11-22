@@ -134,6 +134,7 @@ Written by the gate right after the `transaction` event and before scoring. It f
 | `history` | object | The account's past payments **before** this session: `payment_count`, `median_amount_paise`, `mad_amount_paise` (median absolute deviation), `payees_seen` (list of payee ids), `categories_seen` (list), `last_payment_ts_ms` (or null) |
 | `provenance` | object | `device_accounts_before`: how many other accounts this device logged into before now. `agent`: `null`, or `agent_id`, `public_key` (base64 Ed25519), `issuer`, `past_incidents` (int) from the registry |
 | `issuer_public_key` | string | The bank's mandate-issuer public key (base64), so the mandate can be verified offline |
+| `nonce_reused` | bool | True if the request's signed nonce was already used by this agent before this decision. The replay turns a valid signature into `replayed` (R02) from this |
 | `versions` | object | `policy_version`, `model_version` |
 
 ## 3. The `client` object
@@ -210,3 +211,4 @@ The allowed values of every state field, and the text of every reason code, live
 - **v1, 23 Nov 2026 (K6):** `api_call.status` is `null` (written on arrival). Sessions start at `/api/session/start`, before login. No change to any field name, so `schema_version` stays 1.
 - **v1, 23 Nov 2026 (K7):** `telemetry.js` sends client events. Clarified: clicks with no press, password fields in `form_submit` counts, and which event to read device fields from. No field changes.
 - **v1, 23 Nov 2026 (K8):** `api_call` gains `content_digest_ok` and the `kya_mandate` header (the token, signed by the agent's request signature). Signed agents send `KYA-Mandate` and `KYA-Mandate-Id`; see `kya/identity/signing.py`. Added fields only, so `schema_version` stays 1.
+- **v1, 23 Nov 2026 (K9):** the gate writes `transaction` and `decision_context` for every transfer, merchant payment and add-payee. `decision_context` gains `nonce_reused`. Added field only, so `schema_version` stays 1.

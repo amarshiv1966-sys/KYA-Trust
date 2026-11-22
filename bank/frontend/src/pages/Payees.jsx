@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api.js'
 import { flushTelemetry } from '../telemetry.js'
+import { outcome } from '../decision.js'
 
 export default function Payees() {
   const [payees, setPayees] = useState([])
@@ -22,9 +23,8 @@ export default function Payees() {
       const d = await api('POST', '/api/payees', {
         name, account_number: account, ifsc: ifsc.toUpperCase(),
       })
-      setMsg({ ok: `Payee added (${d.payee_id})`, error: '' })
-      setName(''); setAccount(''); setIfsc('')
-      load()
+      setMsg(outcome(d, `Payee added (${d.payee_id})`))
+      if (d.status === 'executed') { setName(''); setAccount(''); setIfsc(''); load() }
     } catch (err) {
       setMsg({ ok: '', error: err.message })
     }

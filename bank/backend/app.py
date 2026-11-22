@@ -30,6 +30,9 @@ from bank.backend.seed import check_password
 from kya.identity.keys import load_issuer_key, public_key_b64
 from kya.identity.mandates import issue_mandate
 from kya.identity.registry import RegistryError, get_agent, list_agents, register_agent
+from kya.schema import SchemaError
+from kya.score import score_session
+from bank.backend.gate import run_gate
 
 app = FastAPI(title="KYA-Trust mock bank")
 
@@ -120,7 +123,8 @@ async def current_session(request: Request, conn=Depends(get_db)):
     if row is None:
         raise HTTPException(401, "not logged in" if not sid else "session expired or unknown")
     sess = dict(row)
-    log_api_call(sess["session_id"], request, await request.body())
+    # kept on the request so the payment gate can point back to this event
+    request.state.api_call = log_api_call(sess["session_id"], request, await request.body())
     return sess
 
 
@@ -337,66 +341,82 @@ def revoke_mandate(mandate_id: str, sess=Depends(current_session), conn=Depends(
 
 # ---------- sensitive actions ----------
 
-@app.post("/api/payees")
-def add_payee(body: PayeeBody, sess=Depends(current_session), conn=Depends(get_db)):
+@app.post("/api/payees", status_code=202)
+def add_payee(body: PayeeBody, request: Request, sess=Depends(current_session), conn=Depends(get_db)):
+    """Adding a payee is a sensitive action: it goes through the gate too."""
     count = conn.execute("SELECT COUNT(*) FROM payees").fetchone()[0]
     payee_id = f"py_{count + 1:06d}"
-    conn.execute("INSERT INTO payees VALUES (?, ?, ?, ?, ?, ?)",
-                 (payee_id, sess["account_id"], body.name, body.account_number, body.ifsc, now_ms()))
-    return {"payee_id": payee_id}
+
+    def execute(conn, mandate_id, nonce):
+        conn.execute("INSERT INTO payees VALUES (?, ?, ?, ?, ?, ?)",
+                     (payee_id, sess["account_id"], body.name, body.account_number, body.ifsc, now_ms()))
+        return {"payee_id": payee_id}
+
+    return run_gate(conn, request, sess, action="add_payee", payee_id=payee_id, category=None,
+                    amount_paise=0, currency="INR", execute=execute)
 
 
-def execute_payment(conn, sess, action, counterparty, category, amount_paise):
-    """Move money out of the session's account. One ledger row, all or nothing.
+def debit(sess, action, counterparty, category, amount_paise):
+    """The money movement itself, run by the gate inside its BEGIN IMMEDIATE
+    transaction: check the balance, write one ledger row."""
 
-    BEGIN IMMEDIATE takes the write lock before reading the balance, so two
-    payments at the same moment cannot both spend the same money.
-    """
-    conn.execute("BEGIN IMMEDIATE")
-    try:
+    def execute(conn, mandate_id, nonce):
         bal = conn.execute("SELECT balance_paise FROM accounts WHERE account_id = ?",
                            (sess["account_id"],)).fetchone()["balance_paise"]
         if amount_paise > bal:
-            conn.execute("ROLLBACK")
             raise HTTPException(400, "insufficient balance")
         new_bal = bal - amount_paise
-        conn.execute("UPDATE accounts SET balance_paise = ? WHERE account_id = ?",
-                     (new_bal, sess["account_id"]))
+        conn.execute("UPDATE accounts SET balance_paise = ? WHERE account_id = ?", (new_bal, sess["account_id"]))
         cur = conn.execute(
             "INSERT INTO ledger (account_id, ts_ms, action, counterparty, category, amount_paise, "
-            "balance_after, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "balance_after, session_id, mandate_id, nonce) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (sess["account_id"], now_ms(), action, counterparty, category, -amount_paise, new_bal,
-             sess["session_id"]))
-        conn.execute("COMMIT")
-    except HTTPException:
-        raise
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
-    return {"status": "executed", "txn_id": cur.lastrowid, "balance_paise": new_bal}
+             sess["session_id"], mandate_id, nonce))
+        return {"txn_id": cur.lastrowid, "balance_paise": new_bal}
+
+    return execute
 
 
 @app.post("/api/transfer", status_code=202)
-def transfer(body: TransferBody, sess=Depends(current_session), conn=Depends(get_db)):
+def transfer(body: TransferBody, request: Request, sess=Depends(current_session), conn=Depends(get_db)):
     if body.currency != "INR":
         raise HTTPException(422, "only INR is supported")
     payee = conn.execute("SELECT payee_id FROM payees WHERE payee_id = ? AND account_id = ?",
                          (body.payee_id, sess["account_id"])).fetchone()
     if payee is None:
         raise HTTPException(404, "payee not on this account")
-    return execute_payment(conn, sess, "transfer", body.payee_id, None, body.amount_paise)
+    return run_gate(conn, request, sess, action="transfer", payee_id=body.payee_id, category=None,
+                    amount_paise=body.amount_paise, currency=body.currency,
+                    execute=debit(sess, "transfer", body.payee_id, None, body.amount_paise))
 
 
 @app.post("/api/merchant/pay", status_code=202)
-def merchant_pay(body: MerchantPayBody, sess=Depends(current_session), conn=Depends(get_db)):
+def merchant_pay(body: MerchantPayBody, request: Request, sess=Depends(current_session), conn=Depends(get_db)):
     if body.currency != "INR":
         raise HTTPException(422, "only INR is supported")
     merchant = conn.execute("SELECT category FROM merchants WHERE merchant_id = ?",
                             (body.merchant_id,)).fetchone()
     if merchant is None:
         raise HTTPException(404, "unknown merchant")
-    return execute_payment(conn, sess, "merchant_payment", body.merchant_id, merchant["category"],
-                           body.amount_paise)
+    return run_gate(conn, request, sess, action="merchant_payment", payee_id=body.merchant_id,
+                    category=merchant["category"], amount_paise=body.amount_paise, currency=body.currency,
+                    execute=debit(sess, "merchant_payment", body.merchant_id, merchant["category"],
+                                  body.amount_paise))
+
+
+# ---------- scoring API (read-only) ----------
+
+@app.post("/score")
+async def score(request: Request):
+    """Score a list of events. Reads nothing from the bank and writes nothing."""
+    try:
+        events = await request.json()
+    except ValueError:
+        raise HTTPException(400, "body must be a JSON list of events") from None
+    try:
+        return score_session(events)
+    except SchemaError as err:
+        raise HTTPException(422, f"malformed input: {err}") from None
 
 
 # ---------- telemetry ----------

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api.js'
 import { formatPaise, rupeesToPaise } from '../money.js'
 import { flushTelemetry } from '../telemetry.js'
+import { outcome } from '../decision.js'
 
 export default function Transfer() {
   const [payees, setPayees] = useState([])
@@ -23,8 +24,8 @@ export default function Transfer() {
     try {
       await flushTelemetry()
       const d = await api('POST', '/api/transfer', { payee_id: payeeId, amount_paise: paise, currency: 'INR' })
-      setMsg({ ok: `Sent ${formatPaise(paise)}. New balance ${formatPaise(d.balance_paise)}`, error: '' })
-      setAmount(''); setNote('')
+      setMsg(outcome(d, `Sent ${formatPaise(paise)}. New balance ${formatPaise(d.balance_paise)}`))
+      if (d.status === 'executed') { setAmount(''); setNote('') }
     } catch (err) {
       setMsg({ ok: '', error: err.message })
     }

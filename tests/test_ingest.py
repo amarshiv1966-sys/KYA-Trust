@@ -105,12 +105,13 @@ def test_api_client_calls_are_logged_with_headers(env):
     client.post("/api/payees", headers=h, json={"name": "Someone", "account_number": "123456789012",
                                                  "ifsc": "KYAB0001234"})
     log = read(raw, sid)
-    call = log[-1]["data"]
+    payee_calls = [e for e in log if e["type"] == "api_call" and e["data"]["path"] == "/api/payees"]
+    call = payee_calls[-1]["data"]
     assert call["channel"] == "api"
     assert call["headers"]["user_agent"] == "python-httpx/0.28"
     assert call["headers"]["idempotency_key"] == "ik_1"
     assert call["body"] == {}  # name, account number and IFSC removed
-    assert log[-1]["client"]["browser_family"] == "none"
+    assert payee_calls[-1]["client"]["browser_family"] == "none"
 
 
 def test_websocket_needs_a_session(env):
