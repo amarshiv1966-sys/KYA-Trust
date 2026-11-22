@@ -42,6 +42,8 @@ export default function App() {
 
   async function logout() {
     try { await api('POST', '/api/logout') } catch { /* already logged out */ }
+    // a fresh anonymous session, so the next login page is recorded too
+    try { await api('POST', '/api/session/start') } catch { /* bank offline */ }
     setUser(null)
     navigate('/login')
   }

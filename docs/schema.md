@@ -85,14 +85,14 @@ Sent after `telemetry.js` has flushed its buffer, just before the form's request
 
 ### `api_call` (server)
 
-Written by the bank's middleware for **every** API request, from browsers and API-only clients alike.
+Written for **every** API request that carries a session, from browsers and API-only clients alike, at the moment it arrives. A browser session starts before login (our pages call `POST /api/session/start` on load), so the login page's own clicks and keys are in the same session as everything after it.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `method` | string | `GET`, `POST`, … |
 | `path` | string | For example `/api/transfer` |
 | `query` | string | Raw query string, `""` if none |
-| `status` | int | HTTP status the bank returned |
+| `status` | null | Always `null` for now: the event is written when the request **arrives**, before the response exists, so that a `transaction` event can point back to it |
 | `channel` | string | `browser` (request came with the session cookie from our pages) or `api` |
 | `headers` | object | Only these, raw: `user_agent`, `accept_language`, `signature_input`, `signature`, `content_digest`, `kya_mandate_id`, `idempotency_key`. Missing ones are `null` |
 | `body` | object or null | The request body with every free-text field removed (names, notes). Amounts, ids and categories stay |
@@ -202,3 +202,4 @@ The allowed values of every state field, and the text of every reason code, live
 ## Change log
 
 - **v1 (22 Nov 2026):** first version.
+- **v1, 23 Nov 2026 (K6):** `api_call.status` is `null` (written on arrival). Sessions start at `/api/session/start`, before login. No change to any field name, so `schema_version` stays 1.

@@ -12,8 +12,14 @@ if (!document.cookie.includes('kya_dev=')) {
   document.cookie = `kya_dev=${id}; path=/; max-age=31536000; samesite=strict`
 }
 
-createRoot(document.getElementById('root')).render(
-  <BrowserRouter>
-    <App />
-  </BrowserRouter>
-)
+// Start (or resume) a session before anything renders, so telemetry from the
+// login page already belongs to the session the user is about to log into.
+fetch('/api/session/start', { method: 'POST' })
+  .catch(() => {})
+  .finally(() => {
+    createRoot(document.getElementById('root')).render(
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
+    )
+  })

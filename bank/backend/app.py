@@ -1,9 +1,15 @@
-"""The mock bank's API (K4 skeleton).
+"""The mock bank's API.
 
 Run:  uvicorn bank.backend.app:app --reload
 
-Browser sessions carry the cookie kya_sid. API-only clients send the same id
-in the header X-KYA-Session (the login response returns it).
+Browser sessions carry the cookie kya_sid. Our pages get it from
+/api/session/start before login, so the login page's own behaviour lands in
+the same session. API-only clients send the id in the header X-KYA-Session
+(the login response returns it).
+
+Every request with a known session is written to the session's timeline as an
+api_call event (bank/backend/ingest.py), and telemetry.js sends its batches to
+the WebSocket /ws/telemetry.
 
 For now transfers and merchant payments go straight to the ledger. In K9 the
 payment gate replaces execute_payment(): score first, then commit.
@@ -13,11 +19,12 @@ import csv
 import io
 import secrets
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from bank.backend.db import connect, init_db, now_ms
+from bank.backend.ingest import ingest_batch, log_api_call
 from bank.backend.seed import check_password
 
 app = FastAPI(title="KYA-Trust mock bank")
@@ -67,34 +74,86 @@ class MerchantPayBody(BaseModel):
 
 # ---------- who is calling ----------
 
-def current_session(request: Request, conn=Depends(get_db)):
-    """Find the logged-in session from the cookie or the header, or answer 401."""
-    sid = request.cookies.get(COOKIE) or request.headers.get(HEADER)
+def session_id_of(request):
+    return request.cookies.get(COOKIE) or request.headers.get(HEADER)
+
+
+def open_session(conn, sid):
+    """The session row if it exists and is not logged out (user may be None)."""
     if not sid:
-        raise HTTPException(401, "not logged in")
-    row = conn.execute(
-        "SELECT s.session_id, s.user_id, a.account_id FROM sessions s "
-        "JOIN accounts a ON a.user_id = s.user_id "
-        "WHERE s.session_id = ? AND s.ended_ms IS NULL", (sid,)).fetchone()
+        return None
+    row = conn.execute("SELECT * FROM sessions WHERE session_id = ? AND ended_ms IS NULL",
+                       (sid,)).fetchone()
+    return dict(row) if row else None
+
+
+async def current_session(request: Request, conn=Depends(get_db)):
+    """Find the logged-in session from the cookie or the header, or answer 401.
+    Also writes this request to the session's timeline as an api_call event."""
+    sid = session_id_of(request)
+    row = None
+    if sid:
+        row = conn.execute(
+            "SELECT s.session_id, s.user_id, a.account_id FROM sessions s "
+            "JOIN accounts a ON a.user_id = s.user_id "
+            "WHERE s.session_id = ? AND s.ended_ms IS NULL", (sid,)).fetchone()
     if row is None:
-        raise HTTPException(401, "session expired or unknown")
-    return dict(row)
+        raise HTTPException(401, "not logged in" if not sid else "session expired or unknown")
+    sess = dict(row)
+    log_api_call(sess["session_id"], request, await request.body())
+    return sess
+
+
+async def logged_if_session(request: Request, conn=Depends(get_db)):
+    """For endpoints that don't need a login: still log the call if the
+    caller has a session."""
+    sess = open_session(conn, session_id_of(request))
+    if sess:
+        log_api_call(sess["session_id"], request, await request.body())
+    return sess
 
 
 # ---------- login ----------
 
+@app.post("/api/session/start")
+async def session_start(request: Request, response: Response, conn=Depends(get_db)):
+    """Our pages call this on load: reuse the open session, or start an
+    anonymous one (no user yet) so telemetry has somewhere to go."""
+    sess = open_session(conn, request.cookies.get(COOKIE))
+    if sess is None:
+        sid = new_session_id()
+        device_id = request.cookies.get("kya_dev")
+        conn.execute("INSERT INTO sessions VALUES (?, NULL, ?, ?, ?, NULL)",
+                     (sid, device_id, "browser" if device_id else "api", now_ms()))
+        response.set_cookie(COOKIE, sid, httponly=True, samesite="strict")
+    else:
+        sid = sess["session_id"]
+    log_api_call(sid, request, await request.body())
+    return {"session_id": sid}
+
+
 @app.post("/api/login")
-def login(body: LoginBody, request: Request, response: Response, conn=Depends(get_db)):
+async def login(body: LoginBody, request: Request, response: Response, conn=Depends(get_db)):
+    # an anonymous session from /api/session/start becomes this user's session,
+    # so the typing on the login page stays in the same timeline
+    sess = open_session(conn, session_id_of(request))
+    if sess and sess["user_id"] is None:
+        log_api_call(sess["session_id"], request, await request.body())
+
     user = conn.execute("SELECT * FROM users WHERE username = ?", (body.username,)).fetchone()
     if user is None or not check_password(body.password, user["password_hash"]):
         raise HTTPException(401, "wrong username or password")
 
-    # our own pages send the device cookie; anything else counts as an API client
-    device_id = request.cookies.get("kya_dev")
-    channel = "browser" if device_id else "api"
-    sid = new_session_id()
-    conn.execute("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, NULL)",
-                 (sid, user["user_id"], device_id, channel, now_ms()))
+    if sess and sess["user_id"] is None:
+        sid = sess["session_id"]
+        conn.execute("UPDATE sessions SET user_id = ? WHERE session_id = ?", (user["user_id"], sid))
+    else:
+        # our own pages send the device cookie; anything else counts as an API client
+        device_id = request.cookies.get("kya_dev")
+        sid = new_session_id()
+        conn.execute("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, NULL)",
+                     (sid, user["user_id"], device_id, "browser" if device_id else "api", now_ms()))
+        log_api_call(sid, request, await request.body())
     response.set_cookie(COOKIE, sid, httponly=True, samesite="strict")
     return {"session_id": sid, "user_id": user["user_id"], "name": user["display_name"]}
 
@@ -156,7 +215,7 @@ def list_payees(sess=Depends(current_session), conn=Depends(get_db)):
 
 
 @app.get("/api/merchants")
-def list_merchants(conn=Depends(get_db)):
+def list_merchants(sess=Depends(logged_if_session), conn=Depends(get_db)):
     rows = conn.execute("SELECT merchant_id, name, category FROM merchants ORDER BY name").fetchall()
     return {"merchants": [dict(r) for r in rows]}
 
@@ -223,3 +282,27 @@ def merchant_pay(body: MerchantPayBody, sess=Depends(current_session), conn=Depe
         raise HTTPException(404, "unknown merchant")
     return execute_payment(conn, sess, "merchant_payment", body.merchant_id, merchant["category"],
                            body.amount_paise)
+
+
+# ---------- telemetry ----------
+
+@app.websocket("/ws/telemetry")
+async def telemetry(ws: WebSocket):
+    """telemetry.js sends {"batch_id": ..., "events": [...]} and waits for
+    {"ack": batch_id, "kept": n} before a form is submitted."""
+    conn = connect()
+    try:
+        sess = open_session(conn, ws.cookies.get(COOKIE))
+    finally:
+        conn.close()
+    if sess is None:
+        await ws.close(code=4401)  # no session: call /api/session/start first
+        return
+    await ws.accept()
+    try:
+        while True:
+            msg = await ws.receive_json()
+            kept = ingest_batch(sess["session_id"], msg.get("events") if isinstance(msg, dict) else None)
+            await ws.send_json({"ack": msg.get("batch_id") if isinstance(msg, dict) else None, "kept": kept})
+    except WebSocketDisconnect:
+        pass
