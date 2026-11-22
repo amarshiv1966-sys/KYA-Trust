@@ -5,6 +5,8 @@ The whole session and the last 10 seconds are both computed (suffix _last10).
 """
 from kya.behaviour.features import behaviour_features, BEHAVIOUR_TYPES
 from kya.intent.features import intent_features, find_transaction
+# one shared definition of evidence_status (docs/schema.md section 4); re-exported here
+from kya.schema import evidence_status  # noqa: F401
 
 WINDOW_MS = 10000
 
@@ -15,18 +17,6 @@ def cut_at_decision(events):
     if tx is None:
         return events
     return [e for e in events if e["seq"] <= tx["seq"]]
-
-
-def evidence_status(events):
-    # rules from docs/schema.md section 4
-    n_behaviour = sum(e["type"] in BEHAVIOUR_TYPES for e in events)
-    n_core = sum(e["type"] in ("click", "keystroke", "pointer_move") for e in events)
-    n_api = sum(e["type"] == "api_call" for e in events)
-    if n_core == 0 and n_api < 3:
-        return "insufficient"
-    if n_behaviour >= 20:
-        return "sufficient"
-    return "partial"
 
 
 def build_features(events, context):
