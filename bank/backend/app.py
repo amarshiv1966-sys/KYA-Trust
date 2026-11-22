@@ -19,6 +19,7 @@ import csv
 import io
 import secrets
 
+import jwt
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -26,6 +27,9 @@ from pydantic import BaseModel, Field
 from bank.backend.db import connect, init_db, now_ms
 from bank.backend.ingest import ingest_batch, log_api_call
 from bank.backend.seed import check_password
+from kya.identity.keys import load_issuer_key, public_key_b64
+from kya.identity.mandates import issue_mandate
+from kya.identity.registry import RegistryError, get_agent, list_agents, register_agent
 
 app = FastAPI(title="KYA-Trust mock bank")
 
@@ -70,6 +74,22 @@ class MerchantPayBody(BaseModel):
     merchant_id: str
     amount_paise: int = Field(gt=0, strict=True)
     currency: str = "INR"
+
+
+class AgentBody(BaseModel):
+    agent_id: str = Field(min_length=3, max_length=50)
+    public_key: str = Field(min_length=40, max_length=60)
+    issuer: str = Field(min_length=1, max_length=80)
+
+
+class MandateBody(BaseModel):
+    agent_id: str
+    merchant_categories: list[str] = Field(default_factory=list, max_length=20)
+    payees: list[str] = Field(default_factory=list, max_length=50)
+    max_per_txn_paise: int = Field(gt=0, strict=True)
+    max_total_paise: int = Field(gt=0, strict=True)
+    max_txn_per_day: int = Field(gt=0, le=100, strict=True)
+    expiry_days: int = Field(gt=0, le=90, strict=True)
 
 
 # ---------- who is calling ----------
@@ -218,6 +238,101 @@ def list_payees(sess=Depends(current_session), conn=Depends(get_db)):
 def list_merchants(sess=Depends(logged_if_session), conn=Depends(get_db)):
     rows = conn.execute("SELECT merchant_id, name, category FROM merchants ORDER BY name").fetchall()
     return {"merchants": [dict(r) for r in rows]}
+
+
+# ---------- agents and mandates (K8) ----------
+
+@app.get("/api/issuer-key")
+def issuer_key():
+    """The bank's public mandate-issuer key, so anyone can check a mandate."""
+    return {"issuer": "kya-bank", "alg": "EdDSA", "public_key": public_key_b64(load_issuer_key())}
+
+
+@app.get("/api/agents")
+def agents(sess=Depends(logged_if_session), conn=Depends(get_db)):
+    return {"agents": list_agents(conn)}
+
+
+@app.post("/api/agents", status_code=201)
+def add_agent(body: AgentBody, sess=Depends(logged_if_session), conn=Depends(get_db)):
+    """An agent's developer registers its public key. This grants nothing by
+    itself: only a customer's mandate gives an agent any authority."""
+    try:
+        agent = register_agent(conn, body.agent_id, body.public_key, body.issuer)
+    except RegistryError as err:
+        raise HTTPException(409 if "already" in str(err) else 422, str(err)) from None
+    return {"agent_id": agent["agent_id"], "issuer": agent["issuer"]}
+
+
+def mandate_status(row, now):
+    if row["revoked"]:
+        return "revoked"
+    return "expired" if now >= row["expires_ms"] else "active"
+
+
+@app.get("/api/mandates")
+def my_mandates(sess=Depends(current_session), conn=Depends(get_db)):
+    now = now_ms()
+    rows = conn.execute("SELECT * FROM mandates WHERE user_id = ? ORDER BY created_ms DESC",
+                        (sess["user_id"],)).fetchall()
+    out = []
+    for r in rows:
+        claims = jwt_claims(r["token"])
+        out.append({"mandate_id": r["mandate_id"], "agent_id": r["agent_id"], "status": mandate_status(r, now),
+                    "consumed_paise": r["consumed_paise"], "max_total_paise": r["max_total_paise"],
+                    "max_per_txn_paise": claims["max_per_txn_paise"], "max_txn_per_day": claims["max_txn_per_day"],
+                    "merchant_categories": claims["merchant_categories"], "payees": claims["payees"],
+                    "expires_ms": r["expires_ms"], "token": r["token"]})
+    return {"mandates": out}
+
+
+def jwt_claims(token):
+    # our own token from our own table: reading the claims needs no check here
+    return jwt.decode(token, options={"verify_signature": False})
+
+
+@app.post("/api/mandates", status_code=201)
+def new_mandate(body: MandateBody, sess=Depends(current_session), conn=Depends(get_db)):
+    """The logged-in customer gives one agent a limited permission. The bank
+    signs it with its issuer key; the agent cannot make or widen one itself."""
+    if get_agent(conn, body.agent_id) is None:
+        raise HTTPException(404, "unknown agent")
+    if not body.merchant_categories and not body.payees:
+        raise HTTPException(422, "choose at least one category or payee")
+    if body.max_per_txn_paise > body.max_total_paise:
+        raise HTTPException(422, "the per-payment limit cannot be above the total")
+    known_cats = {r[0] for r in conn.execute("SELECT DISTINCT category FROM merchants")}
+    if set(body.merchant_categories) - known_cats:
+        raise HTTPException(422, "unknown merchant category")
+    merchants = {r[0] for r in conn.execute("SELECT merchant_id FROM merchants")}
+    own_payees = {r[0] for r in conn.execute("SELECT payee_id FROM payees WHERE account_id = ?",
+                                             (sess["account_id"],))}
+    if set(body.payees) - merchants - own_payees:
+        raise HTTPException(422, "payee is not a merchant or one of your payees")
+    actions = []
+    if body.merchant_categories or set(body.payees) & merchants:
+        actions.append("merchant_payment")
+    if set(body.payees) & own_payees:
+        actions.append("transfer")
+    mandate_id, token, claims = issue_mandate(
+        user_id=sess["user_id"], account_id=sess["account_id"], agent_id=body.agent_id, actions=actions,
+        payees=body.payees, merchant_categories=body.merchant_categories,
+        max_per_txn_paise=body.max_per_txn_paise, max_total_paise=body.max_total_paise,
+        max_txn_per_day=body.max_txn_per_day, expires_in_s=body.expiry_days * 86_400)
+    conn.execute("INSERT INTO mandates (mandate_id, user_id, account_id, agent_id, token, max_total_paise, "
+                 "consumed_paise, revoked, expires_ms, created_ms) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)",
+                 (mandate_id, sess["user_id"], sess["account_id"], body.agent_id, token,
+                  body.max_total_paise, claims["exp"] * 1000, now_ms()))
+    return {"mandate_id": mandate_id, "token": token, "actions": actions, "expires_ms": claims["exp"] * 1000}
+
+
+@app.post("/api/mandates/{mandate_id}/revoke")
+def revoke_mandate(mandate_id: str, sess=Depends(current_session), conn=Depends(get_db)):
+    cur = conn.execute("UPDATE mandates SET revoked = 1 WHERE mandate_id = ? AND user_id = ?",
+                       (mandate_id, sess["user_id"]))
+    if cur.rowcount == 0:
+        raise HTTPException(404, "no such mandate on your account")
+    return {"mandate_id": mandate_id, "status": "revoked"}
 
 
 # ---------- sensitive actions ----------

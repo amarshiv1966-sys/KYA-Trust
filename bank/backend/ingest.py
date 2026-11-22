@@ -19,6 +19,8 @@ import threading
 import time
 from pathlib import Path
 
+from kya.identity.signing import content_digest
+
 ROOT = Path(__file__).resolve().parents[2]
 
 SCHEMA_VERSION = 1
@@ -50,6 +52,7 @@ KEPT_HEADERS = {
     "signature_input": "signature-input",
     "signature": "signature",
     "content_digest": "content-digest",
+    "kya_mandate": "kya-mandate",
     "kya_mandate_id": "kya-mandate-id",
     "idempotency_key": "idempotency-key",
 }
@@ -253,6 +256,10 @@ def log_api_call(session_id, request, body_bytes):
     except ValueError:
         body = None
     headers = {k: request.headers.get(h) for k, h in KEPT_HEADERS.items()}
+    # Checked here, on the raw bytes: the logged body has free-text fields
+    # removed, so a replay could not recompute the hash itself.
+    digest = headers["content_digest"]
+    digest_ok = None if digest is None else (digest.strip() == content_digest(body_bytes or b""))
     data = {
         "method": request.method,
         "path": request.url.path,
@@ -260,6 +267,7 @@ def log_api_call(session_id, request, body_bytes):
         "status": None,  # not known yet: the event is written before the response
         "channel": "browser" if request.cookies.get("kya_dev") else "api",
         "headers": headers,
+        "content_digest_ok": digest_ok,
         "body": clean_body(body),
     }
     return server_event(session_id, "api_call", data, request)

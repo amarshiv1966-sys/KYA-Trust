@@ -98,7 +98,8 @@ Written for **every** API request that carries a session, from browsers and API-
 | `query` | string | Raw query string, `""` if none |
 | `status` | null | Always `null` for now: the event is written when the request **arrives**, before the response exists, so that a `transaction` event can point back to it |
 | `channel` | string | `browser` (request came with the session cookie from our pages) or `api` |
-| `headers` | object | Only these, raw: `user_agent`, `accept_language`, `signature_input`, `signature`, `content_digest`, `kya_mandate_id`, `idempotency_key`. Missing ones are `null` |
+| `headers` | object | Only these, raw: `user_agent`, `accept_language`, `signature_input`, `signature`, `content_digest`, `kya_mandate` (the mandate JWT), `kya_mandate_id`, `idempotency_key`. Missing ones are `null` |
+| `content_digest_ok` | bool or null | Whether the `Content-Digest` header matched the raw body when the request arrived. `null` if there was no such header. Recorded because `body` below has free-text fields removed, so a replay cannot recompute the hash |
 | `body` | object or null | The request body with every free-text field removed (names, notes). Amounts, ids and categories stay |
 
 The raw signature headers are kept so a replay can **re-verify** the signature from the log alone.
@@ -208,3 +209,4 @@ The allowed values of every state field, and the text of every reason code, live
 - **v1 (22 Nov 2026):** first version.
 - **v1, 23 Nov 2026 (K6):** `api_call.status` is `null` (written on arrival). Sessions start at `/api/session/start`, before login. No change to any field name, so `schema_version` stays 1.
 - **v1, 23 Nov 2026 (K7):** `telemetry.js` sends client events. Clarified: clicks with no press, password fields in `form_submit` counts, and which event to read device fields from. No field changes.
+- **v1, 23 Nov 2026 (K8):** `api_call` gains `content_digest_ok` and the `kya_mandate` header (the token, signed by the agent's request signature). Signed agents send `KYA-Mandate` and `KYA-Mandate-Id`; see `kya/identity/signing.py`. Added fields only, so `schema_version` stays 1.

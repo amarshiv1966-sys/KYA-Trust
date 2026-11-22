@@ -16,3 +16,7 @@ button { margin-top: 16px; padding: 10px 18px; font-size: 15px; border: 0; borde
 table { width: 100%; border-collapse: collapse; }
 td, th { text-align: left; padding: 8px 6px; border-bottom: 1px solid #eceff3; font-size: 14px; }
 .neg { color: #b42318; }
+.muted { color: #667085; font-size: 14px; }
+.row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid #eaecf0; font-size: 14px; }
+.row button { width: auto; flex: none; }
+select[multiple] { padding: 4px; }
