@@ -39,6 +39,9 @@ Id format: `<page>.<element>`. Lowercase, dots and underscores only.
 | --- | --- |
 | `home.balance` | balance display |
 | `home.recent` | recent payments list |
+| `home.send` | button: go to Send money (added 23 Nov) |
+| `home.pay` | button: go to Pay a bill (added 23 Nov) |
+| `home.add_payee` | button: go to Payees (added 23 Nov) |
 
 ### `statements`
 

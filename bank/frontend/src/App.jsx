@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { api } from './api.js'
 import { flushTelemetry, restartTelemetry, telemetryPage } from './telemetry.js'
 import Login from './pages/Login.jsx'
@@ -15,19 +15,25 @@ import Placeholder from './pages/Placeholder.jsx'
 // Bots click by these ids, and telemetry.js (K7) records only these elements.
 
 function Nav({ name, onLogout }) {
+  const link = (id, to, text) => (
+    <NavLink data-kya-id={id} to={to} end={to === '/'} className={({ isActive }) => (isActive ? 'active' : undefined)}>
+      {text}
+    </NavLink>
+  )
   return (
-    <nav className="nav">
-      <strong>KYA Bank</strong>
-      <Link data-kya-id="nav.home" to="/">Home</Link>
-      <Link data-kya-id="nav.statements" to="/statements">Statements</Link>
-      <Link data-kya-id="nav.payees" to="/payees">Payees</Link>
-      <Link data-kya-id="nav.transfer" to="/transfer">Transfer</Link>
-      <Link data-kya-id="nav.merchant" to="/merchant">Pay a merchant</Link>
-      <Link data-kya-id="nav.mandate" to="/mandate">Assistants</Link>
-      <Link data-kya-id="nav.shop" to="/shop">Shop</Link>
-      <span className="spacer" />
-      <span>{name}</span>
-      <button data-kya-id="nav.logout" onClick={onLogout}>Log out</button>
+    <nav className="sidebar" aria-label="Main">
+      <div className="brand"><span className="brand-mark">K</span>KYA Bank</div>
+      {link('nav.home', '/', 'Home')}
+      {link('nav.transfer', '/transfer', 'Send money')}
+      {link('nav.merchant', '/merchant', 'Pay a bill')}
+      {link('nav.payees', '/payees', 'Payees')}
+      {link('nav.statements', '/statements', 'Statements')}
+      {link('nav.shop', '/shop', 'Shop')}
+      {link('nav.mandate', '/mandate', 'Assistants')}
+      <div className="who">
+        <strong>{name}</strong>
+        <button data-kya-id="nav.logout" onClick={onLogout}>Log out</button>
+      </div>
     </nav>
   )
 }
@@ -71,11 +77,11 @@ export default function App() {
   }
 
   return (
-    <>
+    <div className="frame">
       <Nav name={user.name} onLogout={logout} />
-      <main>
+      <main className="content">
         <Routes>
-          <Route path="/" element={<Home onExpired={() => setUser(null)} />} />
+          <Route path="/" element={<Home name={user.name} onExpired={() => setUser(null)} />} />
           <Route path="/statements" element={<Statements />} />
           <Route path="/payees" element={<Payees />} />
           <Route path="/transfer" element={<Transfer />} />
@@ -86,6 +92,6 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
       </main>
-    </>
+    </div>
   )
 }

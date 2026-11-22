@@ -8,6 +8,8 @@ Every customer's password is "demo1234". All names are invented.
 import hashlib
 import os
 import random
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from bank.backend.db import connect, db_path, init_db, now_ms
 
@@ -32,6 +34,7 @@ FIRST = ["Aarav", "Diya", "Kabir", "Meera", "Rohan", "Isha", "Vivaan", "Anaya", 
 LAST = ["Sharma", "Verma", "Iyer", "Nair", "Gupta", "Rao", "Mehta", "Singh", "Das", "Joshi"]
 
 N_CUSTOMERS = 20
+IST = ZoneInfo("Asia/Kolkata")
 
 
 def hash_password(password, salt=None):
@@ -44,6 +47,69 @@ def hash_password(password, salt=None):
 def check_password(password, stored):
     salt, _ = stored.split("$")
     return hash_password(password, salt) == stored
+
+
+def seed_history(conn, account_id, payee_ids, rng, end_balance_paise, days=90):
+    """90 days of ordinary banking for one account, so Home and Statements
+    look real and the model's history features have something to read:
+    salary, rent, bills, groceries, food, travel and transfers to saved payees.
+    Rows have no session (they happened before the study). The running
+    balance never goes below zero; the account ends near end_balance_paise.
+    Must run inside the caller's transaction."""
+    day_ms = 86_400_000
+    today = datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0)
+    t0 = int(today.timestamp() * 1000) - days * day_ms   # midnight IST, `days` ago
+    ev = []  # (ts, action, counterparty, category, signed paise)
+
+    def at(day, hour_lo=9, hour_hi=22):
+        return t0 + day * day_ms + rng.randint(hour_lo, hour_hi) * 3_600_000 + rng.randint(0, 3_599_999)
+
+    def rs(lo, hi, step=1):
+        return rng.randrange(lo, hi + 1, step) * 100
+
+    salary = rs(35_000, 140_000, 500)
+    rent_payee = payee_ids[0] if payee_ids and rng.random() < 0.6 else None
+    rent = rs(7_000, 25_000, 500)
+    stream = rng.choice([149, 199, 499, 649]) * 100
+    for day in range(days):
+        date = datetime.fromtimestamp((t0 + day * day_ms) / 1000, IST)
+        if date.day == 1:
+            ev.append((at(day, 6, 9), "credit", "employer", "salary", salary))
+            if rent_payee:
+                ev.append((at(day), "transfer", rent_payee, None, -rent))
+        if date.day == 5:
+            ev.append((at(day), "merchant_payment", "mr_powergrid", "utilities", -rs(700, 3_800, 10)))
+        if date.day == 8:
+            ev.append((at(day), "merchant_payment", "mr_netfibre", "telecom", -rng.choice([499, 699, 999]) * 100))
+        if date.day == 12:
+            ev.append((at(day), "merchant_payment", "mr_streambox", "entertainment", -stream))
+        if date.weekday() == rng.choice([5, 6]) and rng.random() < 0.85:
+            ev.append((at(day), "merchant_payment", "mr_grocermart", "grocery", -rs(450, 3_600, 10)))
+        if rng.random() < 0.35:
+            ev.append((at(day, 12, 23), "merchant_payment", "mr_quickbite", "food_delivery", -rs(140, 900)))
+        if rng.random() < 0.025:
+            ev.append((at(day), "merchant_payment", "mr_railgo", "travel", -rs(400, 3_200, 5)))
+        if payee_ids and rng.random() < 0.06:
+            ev.append((at(day), "transfer", rng.choice(payee_ids), None, -rs(300, 6_000, 50)))
+        if rng.random() < 0.01:
+            ev.append((at(day), "merchant_payment", "mr_learnly", "education", -rs(499, 4_999)))
+    ev = sorted(e for e in ev if e[0] < now_ms())
+
+    total = sum(e[4] for e in ev)
+    start = end_balance_paise - total
+    running, low = start, start
+    for e in ev:
+        running += e[4]
+        low = min(low, running)
+    if low < 0:
+        start -= low  # top up the start so the balance never dips below zero
+    bal = start
+    for ts, action, cp, cat, amt in ev:
+        bal += amt
+        conn.execute("INSERT INTO ledger (account_id, ts_ms, action, counterparty, category, amount_paise, "
+                     "balance_after) VALUES (?, ?, ?, ?, ?, ?, ?)", (account_id, ts, action, cp, cat, amt, bal))
+    conn.execute("UPDATE accounts SET balance_paise = ? WHERE account_id = ?", (bal, account_id))
+    return bal
 
 
 def seed(conn, rng):
@@ -64,14 +130,17 @@ def seed(conn, rng):
         conn.execute("INSERT INTO accounts VALUES (?, ?, ?)", (account_id, user_id, balance))
 
         # two or three saved payees each
+        mine = []
         for _ in range(rng.randint(2, 3)):
             payee_no += 1
+            mine.append(f"py_{payee_no:06d}")
             conn.execute(
                 "INSERT INTO payees VALUES (?, ?, ?, ?, ?, ?)",
-                (f"py_{payee_no:06d}", account_id, f"{rng.choice(FIRST)} {rng.choice(LAST)}",
+                (mine[-1], account_id, f"{rng.choice(FIRST)} {rng.choice(LAST)}",
                  f"{rng.randint(10**11, 10**12 - 1)}", f"KYAB000{rng.randint(1000, 9999)}",
-                 t - rng.randint(30, 300) * 86_400_000),
+                 t - rng.randint(120, 400) * 86_400_000),
             )
+        seed_history(conn, account_id, mine, rng, balance)
     conn.execute("COMMIT")
     # Past payment history for the features comes from Prachi's PaySim
     # generator (P2), not from here.

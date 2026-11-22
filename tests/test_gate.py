@@ -71,7 +71,9 @@ def balance(client):
 def ledger_rows(tmp_path):
     import sqlite3
     c = sqlite3.connect(tmp_path / "bank.sqlite3")
-    return c.execute("SELECT counterparty, amount_paise, mandate_id, nonce FROM ledger").fetchall()
+    # only payments made during the test, not the seeded 90-day history
+    return c.execute("SELECT counterparty, amount_paise, mandate_id, nonce FROM ledger "
+                     "WHERE session_id IS NOT NULL").fetchall()
 
 
 # ---------- a person ----------

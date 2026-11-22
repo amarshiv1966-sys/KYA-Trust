@@ -24,11 +24,19 @@ export default function Login({ onLogin }) {
   }
 
   return (
-    <div className="center" data-kya-page="login">
-      <div className="card">
-        <h2>Log in to KYA Bank</h2>
+    <div className="login" data-kya-page="login">
+      <div className="login-side">
+        <div className="brand"><span className="brand-mark">K</span>KYA Bank</div>
+        <div>
+          <h2>Your money, and who is moving it.</h2>
+          <p>Send money, pay bills and give your assistants limited permission, all from one account.</p>
+        </div>
+        <p style={{ fontSize: 13 }}>A demo bank for the KYA-Trust study. No real money moves.</p>
+      </div>
+      <div className="login-form">
+        <h1>Log in</h1>
         <form data-kya-id="login.form" onSubmit={submit}>
-          <label htmlFor="username">Customer id</label>
+          <label htmlFor="username">Customer ID</label>
           <input id="username" data-kya-id="login.username" value={username}
                  onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
           <label htmlFor="password">Password</label>
@@ -36,7 +44,7 @@ export default function Login({ onLogin }) {
           <input id="password" type="password" data-kya-id="login.password" value={password}
                  onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
           <button type="submit" data-kya-id="login.submit">Log in</button>
-          {error && <p className="error">{error}</p>}
+          {error && <p className="notice error">{error}</p>}
         </form>
       </div>
     </div>

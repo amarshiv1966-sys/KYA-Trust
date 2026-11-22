@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api.js'
 import { formatPaise, rupeesToPaise } from '../money.js'
 import { flushTelemetry } from '../telemetry.js'
+import { Notice, PageHeader, categoryName } from '../ui.jsx'
 
 // "Assistants": the customer gives one registered agent a limited permission
 // (a mandate). The bank signs it; the agent can use it but never widen it.
@@ -73,9 +74,12 @@ export default function Mandate() {
 
   return (
     <div data-kya-page="mandate">
-      <div className="card">
+      <PageHeader title="Assistants">
+        Let an AI assistant pay for you, inside limits you set. It can never pay more, or anyone else, and you can take the permission back at any time.
+      </PageHeader>
+      <div className="split">
+      <div className="panel">
         <h2>Give an assistant permission</h2>
-        <p className="muted">The assistant can only pay inside these limits. You can take the permission back at any time.</p>
         <form data-kya-id="mandate.form" onSubmit={submit}>
           <label htmlFor="magent">Assistant</label>
           <select id="magent" data-kya-id="mandate.agent" value={form.agent} onChange={set('agent')}>
@@ -83,16 +87,18 @@ export default function Mandate() {
             {agents.map((a) => <option key={a.agent_id} value={a.agent_id}>{a.agent_id} ({a.issuer})</option>)}
           </select>
 
-          <label htmlFor="mcats">May pay merchants in these categories (Ctrl-click for several)</label>
+          <label htmlFor="mcats">May pay billers in these categories
+            <span className="field-hint">Hold Ctrl (Cmd on a Mac) to choose several</span>
+          </label>
           <select id="mcats" multiple size={5} data-kya-id="mandate.categories" value={form.categories}
                   onChange={(e) => setForm({ ...form, categories: selected(e) })}>
-            {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+            {categories.map((c) => <option key={c} value={c}>{categoryName(c)}</option>)}
           </select>
 
           <label htmlFor="mpayees">Only these payees (leave empty for any in the categories)</label>
           <select id="mpayees" multiple size={5} data-kya-id="mandate.payees" value={form.payees}
                   onChange={(e) => setForm({ ...form, payees: selected(e) })}>
-            {merchants.map((m) => <option key={m.merchant_id} value={m.merchant_id}>{m.name} ({m.category})</option>)}
+            {merchants.map((m) => <option key={m.merchant_id} value={m.merchant_id}>{m.name} ({categoryName(m.category)})</option>)}
             {payees.map((p) => <option key={p.payee_id} value={p.payee_id}>{p.name} (your payee)</option>)}
           </select>
 
@@ -105,33 +111,39 @@ export default function Mandate() {
           <label htmlFor="mdays">Valid for (days)</label>
           <input id="mdays" data-kya-id="mandate.expiry_days" inputMode="numeric" value={form.days} onChange={set('days')} />
 
-          <button type="submit" data-kya-id="mandate.submit">Give permission</button>
-          {msg.ok && <p className="ok">{msg.ok}</p>}
-          {msg.error && <p className="error">{msg.error}</p>}
+          <div className="actions">
+            <button type="submit" data-kya-id="mandate.submit">Give permission</button>
+          </div>
+          <Notice msg={msg} />
         </form>
         {issued && (
           <div>
-            <label htmlFor="mtoken">Give this to your assistant</label>
-            <textarea id="mtoken" readOnly rows={4} value={issued.token} style={{ width: '100%', fontFamily: 'monospace', fontSize: 12 }} />
+            <label htmlFor="mtoken">Permission code for your assistant</label>
+            <textarea id="mtoken" className="token" readOnly rows={4} value={issued.token} />
           </div>
         )}
       </div>
 
-      <div className="card" data-kya-id="mandate.list">
-        <h3>Permissions you have given</h3>
-        {mandates.length === 0 && <p className="muted">None yet.</p>}
+      <div className="panel" data-kya-id="mandate.list">
+        <h2>Permissions you have given</h2>
+        {mandates.length === 0 && <p className="empty">None yet.</p>}
         {mandates.map((m) => (
-          <div key={m.mandate_id} className="row">
-            <span>
-              <strong>{m.agent_id}</strong> · {m.merchant_categories.concat(m.payees).join(', ')} ·
-              up to {formatPaise(m.max_per_txn_paise)} each, {formatPaise(m.consumed_paise)} of {formatPaise(m.max_total_paise)} used ·
-              {' '}{m.status}
-            </span>
+          <div key={m.mandate_id} className="mandate">
+            <div>
+              <div style={{ fontWeight: 600 }}>{m.agent_id} <span className={`status ${m.status}`}>{m.status}</span></div>
+              <div className="meta">
+                {m.merchant_categories.map(categoryName).concat(m.payees).join(', ')}
+              </div>
+              <div className="meta">
+                Up to {formatPaise(m.max_per_txn_paise)} a payment. {formatPaise(m.consumed_paise)} of {formatPaise(m.max_total_paise)} used.
+              </div>
+            </div>
             {m.status === 'active' && (
-              <button data-kya-id={`mandate.revoke.${m.mandate_id}`} onClick={() => revoke(m.mandate_id)}>Revoke</button>
+              <button className="secondary" data-kya-id={`mandate.revoke.${m.mandate_id}`} onClick={() => revoke(m.mandate_id)}>Revoke</button>
             )}
           </div>
         ))}
+      </div>
       </div>
     </div>
   )

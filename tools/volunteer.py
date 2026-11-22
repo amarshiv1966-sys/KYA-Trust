@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from bank.backend.db import connect, init_db, now_ms  # noqa: E402
 from bank.backend.ingest import raw_dir  # noqa: E402
-from bank.backend.seed import FIRST, LAST, PASSWORD, hash_password  # noqa: E402
+from bank.backend.seed import FIRST, LAST, PASSWORD, hash_password, seed_history  # noqa: E402
 from bots.common import GENERATOR_VERSION, LABEL_COLUMNS, LABELS_CSV, check_row, load_scenario, load_splits, write_label  # noqa: E402
 
 ACTIVE = ROOT / "data" / "volunteer_active.json"
@@ -88,12 +88,15 @@ def ensure_account(conn, vid):
                      (user_id, vid.lower(), hash_password(PASSWORD), f"Volunteer {vid}"))
         account_id = f"ac_{vid.lower()}"
         conn.execute("INSERT INTO accounts VALUES (?, ?, ?)", (account_id, user_id, 250_000 * 100))
+        mine = []
         for _ in range(3):
             n = conn.execute("SELECT COUNT(*) FROM payees").fetchone()[0] + 1
+            mine.append(f"py_{n:06d}")
             conn.execute("INSERT INTO payees VALUES (?, ?, ?, ?, ?, ?)",
-                         (f"py_{n:06d}", account_id, f"{rng.choice(FIRST)} {rng.choice(LAST)}",
+                         (mine[-1], account_id, f"{rng.choice(FIRST)} {rng.choice(LAST)}",
                           str(rng.randint(10**11, 10**12 - 1)), f"KYAB000{rng.randint(1000, 9999)}",
-                          now_ms() - rng.randint(30, 300) * 86_400_000))
+                          now_ms() - rng.randint(120, 400) * 86_400_000))
+        seed_history(conn, account_id, mine, rng, 250_000 * 100)   # 90 days of ordinary banking
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")

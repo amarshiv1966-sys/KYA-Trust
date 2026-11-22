@@ -17,12 +17,14 @@ payment gate replaces execute_payment(): score first, then commit.
 
 import csv
 import io
+import re
 import secrets
 
 import jwt
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field, field_validator
 
 from bank.backend.db import connect, init_db, now_ms
 from bank.backend.ingest import ingest_batch, log_api_call
@@ -35,6 +37,18 @@ from kya.score import score_session
 from bank.backend.gate import run_gate
 
 app = FastAPI(title="KYA-Trust mock bank")
+
+
+@app.exception_handler(RequestValidationError)
+async def readable_validation_error(request: Request, exc: RequestValidationError):
+    """FastAPI's default 422 is a list of dicts the page can't show. Send the
+    first problem as one sentence instead."""
+    err = exc.errors()[0] if exc.errors() else {}
+    msg = str(err.get("msg", "invalid request")).removeprefix("Value error, ")
+    field = err.get("loc", [""])[-1]
+    if msg.startswith(("Field required", "Input should")):
+        msg = f"{field}: {msg.lower()}"
+    return JSONResponse(status_code=422, content={"detail": msg})
 
 COOKIE = "kya_sid"
 HEADER = "X-KYA-Session"
@@ -62,9 +76,35 @@ class LoginBody(BaseModel):
 
 
 class PayeeBody(BaseModel):
-    name: str = Field(min_length=1, max_length=80)
-    account_number: str = Field(pattern=r"^\d{9,18}$")
-    ifsc: str = Field(pattern=r"^[A-Z]{4}0[A-Z0-9]{6}$")
+    """Accepts what people actually type: spaces or dashes in the account
+    number, IFSC in lower case. Each rule says in plain words what is wrong."""
+    name: str
+    account_number: str
+    ifsc: str
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v):
+        v = " ".join(v.split())
+        if not 2 <= len(v) <= 80:
+            raise ValueError("Enter the payee's name (2 to 80 characters)")
+        return v
+
+    @field_validator("account_number")
+    @classmethod
+    def _account(cls, v):
+        v = re.sub(r"[\s-]", "", v)
+        if not re.fullmatch(r"\d{9,18}", v):
+            raise ValueError("Account number must be 9 to 18 digits")
+        return v
+
+    @field_validator("ifsc")
+    @classmethod
+    def _ifsc(cls, v):
+        v = v.strip().upper()
+        if not re.fullmatch(r"[A-Z]{4}0[A-Z0-9]{6}", v):
+            raise ValueError("IFSC is 11 characters: 4 letters, a zero, then 6 letters or digits (e.g. KYAB0001234)")
+        return v
 
 
 class TransferBody(BaseModel):
@@ -214,8 +254,11 @@ def balance(sess=Depends(current_session), conn=Depends(get_db)):
 def statement_rows(conn, account_id, days):
     since = now_ms() - days * DAY_MS
     rows = conn.execute(
-        "SELECT txn_id, ts_ms, action, counterparty, category, amount_paise, balance_after "
-        "FROM ledger WHERE account_id = ? AND ts_ms >= ? ORDER BY txn_id DESC",
+        "SELECT l.txn_id, l.ts_ms, l.action, l.counterparty, l.category, l.amount_paise, l.balance_after, "
+        "COALESCE(m.name, p.name, CASE WHEN l.action = 'credit' THEN 'Salary' END, l.counterparty) AS name "
+        "FROM ledger l LEFT JOIN merchants m ON m.merchant_id = l.counterparty "
+        "LEFT JOIN payees p ON p.payee_id = l.counterparty "
+        "WHERE l.account_id = ? AND l.ts_ms >= ? ORDER BY l.ts_ms DESC, l.txn_id DESC",
         (account_id, since)).fetchall()
     return [dict(r) for r in rows]
 
@@ -234,9 +277,10 @@ def statements_download(range: int = 30, sess=Depends(current_session), conn=Dep
     rows = statement_rows(conn, sess["account_id"], range)
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["txn_id", "ts_ms", "action", "counterparty", "category", "amount_paise", "balance_after"])
+    writer.writerow(["txn_id", "ts_ms", "action", "counterparty", "name", "category", "amount_paise",
+                     "balance_after"])
     for r in rows:
-        writer.writerow([r["txn_id"], r["ts_ms"], r["action"], r["counterparty"], r["category"],
+        writer.writerow([r["txn_id"], r["ts_ms"], r["action"], r["counterparty"], r["name"], r["category"],
                          r["amount_paise"], r["balance_after"]])
     buf.seek(0)
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",

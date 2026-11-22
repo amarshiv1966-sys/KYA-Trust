@@ -3,6 +3,7 @@ import { api } from '../api.js'
 import { formatPaise, rupeesToPaise } from '../money.js'
 import { flushTelemetry } from '../telemetry.js'
 import { outcome } from '../decision.js'
+import { Notice, PageHeader } from '../ui.jsx'
 
 export default function Transfer() {
   const [payees, setPayees] = useState([])
@@ -31,25 +32,43 @@ export default function Transfer() {
     }
   }
 
+  const chosen = payees.find((p) => p.payee_id === payeeId)
+  const preview = rupeesToPaise(amount)
+
   return (
     <div data-kya-page="transfer">
-      <div className="card">
-        <h2>Send money</h2>
-        <form data-kya-id="transfer.form" onSubmit={submit}>
-          <label htmlFor="tpayee">To</label>
-          <select id="tpayee" data-kya-id="transfer.payee" value={payeeId} onChange={(e) => setPayeeId(e.target.value)}>
-            <option value="">Choose a payee</option>
-            {payees.map((p) => <option key={p.payee_id} value={p.payee_id}>{p.name}</option>)}
-          </select>
-          <label htmlFor="tamount">Amount (₹)</label>
-          <input id="tamount" data-kya-id="transfer.amount" inputMode="decimal" value={amount}
-                 onChange={(e) => setAmount(e.target.value)} />
-          <label htmlFor="tnote">Note (optional)</label>
-          <input id="tnote" data-kya-id="transfer.note" value={note} onChange={(e) => setNote(e.target.value)} />
-          <button type="submit" data-kya-id="transfer.submit">Send</button>
-          {msg.ok && <p className="ok">{msg.ok}</p>}
-          {msg.error && <p className="error">{msg.error}</p>}
-        </form>
+      <PageHeader title="Send money">Transfers go out from your savings account straight away.</PageHeader>
+      <div className="split">
+        <div className="panel">
+          <form data-kya-id="transfer.form" onSubmit={submit}>
+            <label htmlFor="tpayee" style={{ marginTop: 0 }}>To</label>
+            <select id="tpayee" data-kya-id="transfer.payee" value={payeeId} onChange={(e) => setPayeeId(e.target.value)}>
+              <option value="">Choose a payee</option>
+              {payees.map((p) => <option key={p.payee_id} value={p.payee_id}>{p.name}</option>)}
+            </select>
+            <label htmlFor="tamount">Amount</label>
+            <div className="amount-input">
+              <span>₹</span>
+              <input id="tamount" data-kya-id="transfer.amount" inputMode="decimal" value={amount}
+                     onChange={(e) => setAmount(e.target.value)} placeholder="0" autoComplete="off" />
+            </div>
+            <label htmlFor="tnote">Note <span className="field-hint" style={{ display: 'inline' }}>(only you see this)</span></label>
+            <input id="tnote" data-kya-id="transfer.note" value={note} onChange={(e) => setNote(e.target.value)}
+                   placeholder="Rent for November" />
+            {chosen && preview ? (
+              <p className="summary">You are sending <strong className="money">{formatPaise(preview)}</strong> to <strong>{chosen.name}</strong>.</p>
+            ) : null}
+            <div className="actions">
+              <button type="submit" data-kya-id="transfer.submit">Send</button>
+            </div>
+            <Notice msg={msg} />
+          </form>
+        </div>
+        <div className="panel">
+          <h2>Before you send</h2>
+          <p className="hint">Check the name and amount. A payment that has gone out cannot be called back.</p>
+          <p className="hint">Paying someone new? Add them first on the Payees page.</p>
+        </div>
       </div>
     </div>
   )
