@@ -29,7 +29,6 @@ httpx
 playwright
 selenium
 playwright-stealth
-python-ghost-cursor
 
 # tests
 pytest
