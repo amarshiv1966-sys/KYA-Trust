@@ -74,8 +74,11 @@ def check_mandate(sig, tx, context):
     return result
 
 
-def score_session(events, decision_seq=None):
-    started = time.perf_counter()
+def session_facts(events, decision_seq=None):
+    """Everything about one decision that does not need a model: the cut, the
+    context, identity and mandate checks, evidence, the payment itself and the
+    environment codes. score_session() and the baselines both use it, so every
+    policy is judged on exactly the same facts."""
     validate_events(events)
 
     txs = [e for e in events if e["type"] == "transaction"]
@@ -97,8 +100,6 @@ def score_session(events, decision_seq=None):
         context = ctx_events[0]["data"] if ctx_events else None
         action_type = tx["data"]["action"]
 
-    evidence = evidence_status(cut)
-
     identity_state, mandate_state, mandate_codes, extra = "undeclared", "none", [], []
     if tx is not None:
         calls = [e for e in cut if e["seq"] == tx["data"].get("api_call_seq") and e["type"] == "api_call"]
@@ -112,14 +113,30 @@ def score_session(events, decision_seq=None):
                     if m.state == "within" and identity_state == "verified":
                         extra.append("R60")
 
+    return {
+        "session_id": events[0]["session_id"], "decision_seq": decision_seq, "cut": cut, "context": context,
+        "action_type": action_type, "amount_paise": tx["data"]["amount_paise"] if tx else 0,
+        "new_payee": bool(tx["data"].get("new_payee")) if tx else False,
+        "identity_state": identity_state, "mandate_state": mandate_state, "mandate_codes": mandate_codes,
+        "evidence": evidence_status(cut), "env_codes": environment_codes(cut), "extra_codes": extra,
+    }
+
+
+def score_session(events, decision_seq=None):
+    started = time.perf_counter()
+    f = session_facts(events, decision_seq)
+    cut, context, decision_seq = f["cut"], f["context"], f["decision_seq"]
+    identity_state, mandate_state, mandate_codes = f["identity_state"], f["mandate_state"], f["mandate_codes"]
+    evidence, action_type, extra = f["evidence"], f["action_type"], list(f["extra_codes"])
+
     features = build_features(cut, context)
     model = fake.predict(features, identity_state)
-    amount = tx["data"]["amount_paise"] if tx else 0
+    amount = f["amount_paise"]
     policy = decide(identity_state, mandate_state, model["p_fraud"], amount, evidence, action_type,
                     mandate_codes=mandate_codes)
     if evidence != "sufficient" and "R50" not in policy["policy_codes"] and identity_state != "verified":
         extra.append("R50")
-    extra += environment_codes(cut)
+    extra += f["env_codes"]
     reasons = fake.rank_reasons(model["contribs"], policy["policy_codes"], extra)
     base, score = trust_score(model["p_fraud"], policy["trust_cap"])
     agent_class = max(model["class_probs"], key=model["class_probs"].get)
