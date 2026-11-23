@@ -1,2 +1,4 @@
 # Separate venv (bots/.venv-agents) so browser-use's pins don't clash with the main one
 browser-use
+python-dotenv
+pyyaml
