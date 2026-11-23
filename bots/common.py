@@ -27,10 +27,20 @@ FAMILIES = {
     "http_variant2": {"kind": "http", "user_agent": "curl/8.4.0", "pause_s": 0.4},
     "pw_basic":      {"kind": "playwright", "browser": "chromium", "typing": "fill", "key_delay_ms": 0, "pause_ms": 0},
     "pw_variant2":   {"kind": "playwright", "browser": "chromium", "typing": "keys", "key_delay_ms": 80, "pause_ms": 250},
+    "http_signed":    {"kind": "http_signed", "user_agent": "billwise-agent/1.2", "pause_s": 0.2,
+                       "agents": ["agent_billpay_a", "agent_billpay_b"],
+                       "categories": ["utilities", "telecom", "grocery", "entertainment"]},
+    "http_signed_v2": {"kind": "http_signed", "user_agent": "payloop-assistant/0.9 (httpx)", "pause_s": 0.6,
+                       "agents": ["agent_billpay_c", "agent_billpay_d"],
+                       "categories": ["utilities", "education", "food_delivery", "telecom"]},
+    "bu_legit_c1": {"kind": "agent"}, "bu_legit_c2": {"kind": "agent"},
+    "bu_legit_c3": {"kind": "agent"}, "bu_legit_c4": {"kind": "agent"},
+    "bu_inject_c1": {"kind": "agent"}, "bu_inject_c2": {"kind": "agent"},
     "pw_firefox_family": {"kind": "playwright", "browser": "firefox", "typing": "keys", "key_delay_ms": 40, "pause_ms": 120},
 }
 # scenarios these runners can do today (signed bots wait for Kartik's K8; mule needs many accounts)
-SUPPORTED = ["bot_read_statement", "bot_malicious_transfer"]
+SUPPORTED = ["bot_read_statement", "bot_malicious_transfer", "bot_signed_billpay",
+             "agent_legit_merchant", "agent_prompt_injection"]
 
 
 def load_scenario(name):
@@ -72,7 +82,7 @@ def pick_amount_paise(scenario, rng, balance_paise):
 def make_label_row(scenario, family, sid, seed):
     fam = FAMILIES[family]
     l = scenario["labels"]
-    is_browser = fam["kind"] == "playwright"
+    is_browser = fam["kind"] in ("playwright", "agent")
     row = {
         "session_id": sid, "decision_seq": "",          # decision_seq is filled from the log later
         "actor": l["actor"], "legit": l["legit"], "authorized": l["authorized"], "victim": l["victim"],
@@ -82,8 +92,8 @@ def make_label_row(scenario, family, sid, seed):
         "channel": "browser" if is_browser else "api",
         "device_class": "desktop" if is_browser else "unknown",
         "input_type": "unknown",
-        "browser": {"chromium": "chrome", "firefox": "firefox"}[fam["browser"]] if is_browser else "none",
-        "framework": "playwright" if is_browser else "httpx",
+        "browser": {"chromium": "chrome", "firefox": "firefox"}[fam.get("browser", "chromium")] if is_browser else "none",
+        "framework": {"playwright": "playwright", "agent": "browser-use"}.get(fam["kind"], "httpx"),
         "config_id": family, "seed": seed, "generator_version": GENERATOR_VERSION,
     }
     check_row(row)

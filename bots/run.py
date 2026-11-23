@@ -30,6 +30,11 @@ def main():
         if fam["kind"] == "http":
             from bots import http_bot
             sid = http_bot.run(scenario, fam, rng)
+        elif fam["kind"] == "agent":
+            raise SystemExit("browser-use agents run with: python -m bots.agents.run_agent (see its docstring)")
+        elif fam["kind"] == "http_signed":
+            from bots import signed_bot
+            sid = signed_bot.run(scenario, fam, rng)
         else:
             from bots import pw_bot
             sid = pw_bot.run(scenario, fam, rng, a.headed)
