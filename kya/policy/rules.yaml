@@ -1,0 +1,32 @@
+# KYA-Trust policy (K11). Every number the decision uses lives here.
+# Changing a number here changes the decisions; bump `version` when you do,
+# and the version goes into every decision output.
+
+version: p-1
+
+# Expected cost of each action, in rupees (the brief's default matrix).
+#   legit  = cost if the session is legitimate (customer friction)
+#   fraud_share = share of the amount lost if it is fraud
+costs:
+  allow:   {legit: 0,   fraud_share: 1.0}
+  step_up: {legit: 20,  fraud_share: 0.3}
+  hold:    {legit: 150, fraud_share: 0.1}
+  block:   {legit: 500, fraud_share: 0.0}
+
+# On a tie, the less intrusive action wins (this order).
+order: [allow, step_up, hold, block]
+
+# Adding a payee moves no money, but opens the door to later payments.
+# It is scored as if this much were at risk.
+add_payee_exposure_inr: 10000
+
+# A hard rule caps how high the trust score can go.
+trust_caps:
+  block: 5       # invalid signature (R01), replay (R02)
+  hold: 20       # mandate expired, revoked or exceeded (R10-R13)
+  step_up: 40    # unknown agent (R41), not enough evidence (R50)
+
+# Environment checks: these only add reason codes, they never decide alone.
+environment:
+  automation_flag: R20       # navigator.webdriver is true
+  api_without_page: R21      # API calls but no page activity at all

@@ -1,7 +1,6 @@
 """decide(): hard rules first, then the lowest expected cost (plan section 10).
 
-K9 version: the numbers are constants here. K11 moves them to rules.yaml,
-adds the worked-example test and the reason-code merge.
+All numbers come from rules.yaml next to this file.
 
 Expected cost of each action, with p = p_fraud and A = rupees at risk:
     allow    = p * A                     (fraud gets through)
@@ -11,22 +10,30 @@ Expected cost of each action, with p = p_fraud and A = rupees at risk:
 The cheapest wins; on a tie, the less intrusive action wins.
 """
 
-POLICY_VERSION = "p-0"
-ADD_PAYEE_EXPOSURE_PAISE = 1_000_000          # Rs 10,000 at risk when a payee is added
-ORDER = ["allow", "step_up", "hold", "block"]   # least to most intrusive
+from pathlib import Path
 
-# trust caps: a hard rule limits how high trust_score can be
-CAP_BLOCK, CAP_HOLD, CAP_STEP_UP = 5, 20, 40
+import yaml
+
+RULES_FILE = Path(__file__).with_name("rules.yaml")
+
+
+def load_rules(path=RULES_FILE):
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+RULES = load_rules()
+POLICY_VERSION = RULES["version"]
+ORDER = RULES["order"]                                   # least to most intrusive
+ADD_PAYEE_EXPOSURE_PAISE = RULES["add_payee_exposure_inr"] * 100
+CAP_BLOCK = RULES["trust_caps"]["block"]
+CAP_HOLD = RULES["trust_caps"]["hold"]
+CAP_STEP_UP = RULES["trust_caps"]["step_up"]
 
 
 def expected_costs(p, amount_rupees):
-    a = amount_rupees
-    return {
-        "allow": p * a,
-        "step_up": 20 * (1 - p) + 0.3 * p * a,
-        "hold": 150 * (1 - p) + 0.1 * p * a,
-        "block": 500 * (1 - p),
-    }
+    return {act: c["legit"] * (1 - p) + c["fraud_share"] * p * amount_rupees
+            for act, c in RULES["costs"].items()}
 
 
 def cheapest(p, amount_rupees):

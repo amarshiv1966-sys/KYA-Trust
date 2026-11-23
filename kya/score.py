@@ -21,6 +21,7 @@ import time
 
 import jwt
 
+from kya.environment.checks import environment_codes
 from kya.features import build_features
 from kya.fusion import fake
 from kya.identity.mandates import verify_mandate
@@ -118,6 +119,7 @@ def score_session(events, decision_seq=None):
                     mandate_codes=mandate_codes)
     if evidence != "sufficient" and "R50" not in policy["policy_codes"] and identity_state != "verified":
         extra.append("R50")
+    extra += environment_codes(cut)
     reasons = fake.rank_reasons(model["contribs"], policy["policy_codes"], extra)
     base, score = trust_score(model["p_fraud"], policy["trust_cap"])
     agent_class = max(model["class_probs"], key=model["class_probs"].get)
