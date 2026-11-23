@@ -52,22 +52,31 @@ def run(scenario, fam, rng, headed=False):
                 put(page, "payees.account", str(rng.randint(10**11, 10**12 - 1)), fam)
                 put(page, "payees.ifsc", f"KYAB0{rng.randint(100000, 999999)}", fam)
                 page.click(by_id("payees.submit"))
-                page.wait_for_selector(".ok")
-                payee_id = re.search(r"py_\d+", page.inner_text(".ok")).group(0)   # "Payee added (py_000042)"
-                page.wait_for_timeout(pause)
-            page.click(by_id("nav.transfer"))
-            page.wait_for_selector(by_id("transfer.payee") + " option:nth-child(2)", state="attached")
-            if payee_id:
-                page.select_option(by_id("transfer.payee"), payee_id)
+                page.wait_for_selector(".ok, .error")
+                found = re.search(r"py_\d+", page.inner_text("form"))    # "Payee added (py_000042)"
+                if found:
+                    payee_id = found.group(0)
+                    page.wait_for_timeout(pause)
+            if scenario["payee"] == "new" and not payee_id:
+                pass        # the gate stepped up, held or blocked the new payee: the session ends here
             else:
-                page.select_option(by_id("transfer.payee"), index=1)
-            amount = pick_amount_paise(scenario, rng, balance_paise) // 100
-            put(page, "transfer.amount", str(amount), fam)
-            page.wait_for_timeout(pause)
-            page.click(by_id("transfer.submit"))
-            page.wait_for_selector(".ok")
+                transfer(page, scenario, rng, balance_paise, fam, payee_id, pause)
 
         page.click(by_id("nav.logout"))
         page.wait_for_selector(by_id("login.submit"))
         browser.close()
     return sid
+
+
+def transfer(page, scenario, rng, balance_paise, fam, payee_id, pause):
+    page.click(by_id("nav.transfer"))
+    page.wait_for_selector(by_id("transfer.payee") + " option:nth-child(2)", state="attached")
+    if payee_id:
+        page.select_option(by_id("transfer.payee"), payee_id)
+    else:
+        page.select_option(by_id("transfer.payee"), index=1)
+    amount = pick_amount_paise(scenario, rng, balance_paise) // 100
+    put(page, "transfer.amount", str(amount), fam)
+    page.wait_for_timeout(pause)
+    page.click(by_id("transfer.submit"))
+    page.wait_for_selector(".ok, .error")

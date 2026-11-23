@@ -31,6 +31,8 @@ def run(scenario, fam, rng):
         r = c.post("/api/payees", json={"name": rng.choice(NAMES), "account_number": acct,
                                         "ifsc": f"KYAB0{rng.randint(100000, 999999)}"})
         r.raise_for_status()
+        if "payee_id" not in r.json():     # the gate stepped up, held or blocked the new payee: the bank
+            return sid                     # stopped the bot here, so this was the session's decision
         payee_id = r.json()["payee_id"]
     else:
         payee_id = c.get("/api/payees").json()["payees"][0]["payee_id"]
