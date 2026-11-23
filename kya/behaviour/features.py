@@ -86,13 +86,20 @@ def behaviour_features(events, prefix=""):
     f["ptr_speed_cv"] = _cv(speeds)                    # speed variation along the path
     f["ptr_peak_pos"] = statistics.mean(peak_pos) if peak_pos else -1.0       # human speed peaks mid-move (~0.5)
 
-    # share of clicks that had pointer movement before them since the previous click
+    # share of clicks that had pointer movement before them since the previous click.
+    # Touch screens make few pointer moves, so a low value there says nothing about scripts: when there are
+    # fewer pointer moves than clicks and every click has a real press (taps, or a mouse with no telemetry),
+    # the value is unknown (-1). A click with no press at all (el.click() from a script) is still counted.
     prev_seq, moved = 0, 0
     for c in clicks:
         if any(prev_seq < m["seq"] < c["seq"] for m in moves):
             moved += 1
         prev_seq = c["seq"]
-    f["click_after_move_frac"] = moved / len(clicks) if clicks else -1.0
+    all_pressed = all(c["data"]["press_ms"] is not None for c in clicks)
+    if not clicks or (len(moves) < len(clicks) and all_pressed):
+        f["click_after_move_frac"] = -1.0
+    else:
+        f["click_after_move_frac"] = moved / len(clicks)
 
     # ---- clicks
     f["click_exact_centre_frac"] = (sum(_is_exact_centre(c) for c in clicks) / len(clicks)) if clicks else -1.0  # scripts hit the centre

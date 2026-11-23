@@ -21,6 +21,7 @@ import os
 import random
 import shutil
 import time
+from contextlib import asynccontextmanager
 
 from bots import common
 
@@ -47,8 +48,13 @@ STYLE = {
 # every agent gets this, so weak models do not drive the page through JavaScript or raw CDP
 BASE_RULES = ("Act like a normal person using the website. Use the click and type actions on the "
               "elements you can see. Do not run JavaScript, do not use raw CDP calls, and do not "
-              "read page source. When the payment is confirmed, log out, then finish.")
-MAX_STEPS = 18
+              "read page source. When the payment is confirmed, log out, then finish. "
+              "Hints: log in with fill_input('#username', '<customer id>'), "
+              "fill_input('#password', '<password>') and press_key('Enter'). Buttons on the shop and "
+              "checkout pages carry data-kya-id attributes (shop.item.<sku>.add, shop.checkout, shop.pay, "
+              "nav.logout). Take a screenshot to see where a button is and click it with click_at_xy(x, y). "
+              "Do not analyse screenshot pixels with Python libraries.")
+MAX_STEPS = 22
 
 
 def style_for(family):
@@ -114,19 +120,54 @@ def label_row(scenario, family, sid, seed, outcome, details):
     return row
 
 
+_LAST_CALL = [0.0]          # shared by every agent in this process, so retries keep the spacing
+
+
+def throttled(pydantic_model, rpm):
+    """The same model, but model requests are spaced so we stay under the provider's requests-per-minute limit."""
+    from pydantic_ai.models.wrapper import WrapperModel
+    gap = 60.0 / rpm
+
+    async def wait():
+        pause = _LAST_CALL[0] + gap - time.monotonic()
+        if pause > 0:
+            await __import__("asyncio").sleep(pause)
+        _LAST_CALL[0] = time.monotonic()
+
+    class Throttled(WrapperModel):
+        async def request(self, *a, **k):
+            await wait()
+            return await super().request(*a, **k)
+
+        @asynccontextmanager
+        async def request_stream(self, *a, **k):
+            await wait()
+            async with self.wrapped.request_stream(*a, **k) as stream:
+                yield stream
+
+    return Throttled(pydantic_model)
+
+
 def make_llm():
     provider = os.environ.get("KYA_LLM", "openai")
     model = os.environ["KYA_LLM_MODEL"]
     if provider == "openai":
         from browser_use import ChatOpenAI
-        return ChatOpenAI(model=model)
-    if provider == "anthropic":
+        llm = ChatOpenAI(model=model)
+    elif provider == "anthropic":
         from browser_use import ChatAnthropic
-        return ChatAnthropic(model=model)
-    if provider == "google":
+        llm = ChatAnthropic(model=model)
+    elif provider == "google":
         from browser_use import ChatGoogle
-        return ChatGoogle(model=model)
-    raise SystemExit(f"unknown KYA_LLM {provider}")
+        llm = ChatGoogle(model=model)
+    elif provider == "openai_compat":           # Ollama, Groq, OpenRouter: any OpenAI-style chat endpoint
+        from browser_use import ChatOpenAI
+        llm = ChatOpenAI(model=model, base_url=os.environ["KYA_LLM_BASE_URL"],
+                         api_key=os.environ.get("KYA_LLM_API_KEY", "ollama"))
+    else:
+        raise SystemExit(f"unknown KYA_LLM {provider}")
+    rpm = float(os.environ.get("KYA_LLM_RPM", "0") or 0)
+    return throttled(llm.pydantic_model(), rpm) if rpm > 0 else llm
 
 
 def preflight():
@@ -142,6 +183,9 @@ def preflight():
         if "404" in text or "NOT_FOUND" in text:
             raise SystemExit(f"model {os.environ['KYA_LLM_MODEL']} is not available to this key. "
                              f"List the callable ones with client.models.list().\n{text[:300]}")
+        if "503" in text or "UNAVAILABLE" in text:
+            raise SystemExit(f"{os.environ['KYA_LLM_MODEL']} is overloaded right now (503). Try another --model "
+                             f"or try again later.\n{text[:200]}")
         if "429" in text or "RESOURCE_EXHAUSTED" in text:
             raise SystemExit(f"quota used up for {os.environ['KYA_LLM_MODEL']}: wait for the reset "
                              f"or use another --model.\n{text[:300]}")
@@ -184,9 +228,20 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--headed", action="store_true")
     ap.add_argument("--model", help="model name; overrides KYA_LLM_MODEL in .env")
+    ap.add_argument("--max-failures", type=int, default=2,
+                    help="stop after this many failed runs in a row (use a large number for a success-rate test)")
+    ap.add_argument("--provider", help="overrides KYA_LLM in .env: google, openai, anthropic or openai_compat")
+    ap.add_argument("--base-url", help="for openai_compat, e.g. http://localhost:11434/v1 for Ollama")
+    ap.add_argument("--rpm", type=float, help="keep model requests under this many per minute (free tiers: 4 for a 5 RPM limit)")
     a = ap.parse_args()
     if a.model:
         os.environ["KYA_LLM_MODEL"] = a.model
+    if a.rpm:
+        os.environ["KYA_LLM_RPM"] = str(a.rpm)
+    if a.provider:
+        os.environ["KYA_LLM"] = a.provider
+    if a.base_url:
+        os.environ["KYA_LLM_BASE_URL"] = a.base_url
 
     scenario = common.load_scenario(a.scenario)
     common.check_family(a.scenario, scenario, a.family)
@@ -195,8 +250,8 @@ def main():
 
     failures = 0                              # runs in a row that gave nothing usable
     for i in range(a.n):
-        if failures >= 2:
-            print("two failed runs in a row: probably the model's quota or availability. Stopping; try later or use --model.")
+        if failures >= a.max_failures:
+            print(f"{failures} failed runs in a row: probably the model's quota or availability. Stopping; try later or use --model.")
             break
         seed = a.seed + i
         rng = random.Random(seed)
