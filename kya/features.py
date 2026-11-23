@@ -6,6 +6,8 @@ The whole session and the last 10 seconds are both computed (suffix _last10).
 from kya.behaviour.features import behaviour_features
 from kya.schema import BEHAVIOUR_TYPES, evidence_status   # one shared rule; re-exported so tests keep importing it from here
 from kya.intent.features import intent_features, find_transaction
+# one shared definition of evidence_status (docs/schema.md section 4); re-exported here
+from kya.schema import evidence_status  # noqa: F401
 
 WINDOW_MS = 10000
 
@@ -32,5 +34,6 @@ def build_features(events, context):
 
 def device_fields(events):
     # Coarse device fields kept OUT of the model. Only eval/ uses them, for the device-only shortcut check.
-    c = events[0]["client"] if events else {}
+    first = next((e for e in events if e["source"] == "client"), events[0] if events else None)
+    c = first["client"] if first else {}
     return {k: c.get(k) for k in ("device_class", "os_family", "browser_family", "input_type")}

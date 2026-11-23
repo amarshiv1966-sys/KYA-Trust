@@ -8,7 +8,15 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    # These tests check the bank's mechanics, not the decision: every
+    # payment scores as low risk so the gate lets it through.
+    from kya.fusion import fake
+    monkeypatch.setattr(fake, "predict", lambda features, identity_state="undeclared": {
+        "class_probs": {"human": 1.0, "scripted_bot": 0.0, "llm_agent": 0.0}, "p_fraud": 0.0,
+        "contribs": {"actor": {}, "risk": {}}})
     monkeypatch.setenv("KYA_DB", str(tmp_path / "bank.sqlite3"))
+    monkeypatch.setenv("KYA_RAW_DIR", str(tmp_path / "raw"))
+    monkeypatch.setenv("KYA_KEYS_DIR", str(tmp_path / "keys"))
     from bank.backend.db import connect
     from bank.backend.seed import seed
     from bank.backend.app import app
@@ -47,11 +55,11 @@ def test_add_payee_then_transfer(client):
     before = client.get("/api/balance").json()["balance_paise"]
     r = client.post("/api/payees", json={"name": "New Friend", "account_number": "123456789012",
                                          "ifsc": "KYAB0001234"})
-    assert r.status_code == 200
+    assert r.status_code == 202 and r.json()["status"] == "executed"
     payee_id = r.json()["payee_id"]
 
     r = client.post("/api/transfer", json={"payee_id": payee_id, "amount_paise": 250000})
-    assert r.status_code == 202
+    assert r.status_code == 202 and r.json()["status"] == "executed"
     assert r.json()["balance_paise"] == before - 250000
 
     rows = client.get("/api/statements").json()["rows"]
@@ -60,6 +68,7 @@ def test_add_payee_then_transfer(client):
 
 def test_merchant_payment_records_category(client):
     login(client)
+    client.get("/api/balance")  # with only login + pay, the gate asks for a step-up (R50: too little evidence)
     r = client.post("/api/merchant/pay", json={"merchant_id": "mr_kyashop", "amount_paise": 149900})
     assert r.status_code == 202
     assert client.get("/api/statements").json()["rows"][0]["category"] == "electronics"
@@ -89,3 +98,31 @@ def test_statement_download_is_csv(client):
     r = client.get("/api/statements/download?range=30")
     assert r.status_code == 200
     assert r.text.startswith("txn_id,")
+
+
+def test_login_page_never_reuses_an_old_logged_in_session(client):
+    # a browser left logged in as cust_0001 opens a new tab showing the login page
+    old = login(client, "cust_0001")
+    fresh = client.post("/api/session/start", json={"anonymous": True}).json()["session_id"]
+    assert fresh != old                                     # the old session is not reused...
+    assert client.get("/api/balance", headers={"X-KYA-Session": old}).status_code == 401   # ...it is ended
+    assert login(client, "cust_0002") == fresh              # login binds the session the recorder is on
+    # a reload while logged in keeps the same session
+    assert client.post("/api/session/start", json={"anonymous": False}).json()["session_id"] == fresh
+
+
+def test_task_card_is_shown_but_never_logged(client, tmp_path, monkeypatch):
+    import json as _json
+    import bank.backend.app as bank_app
+    from bank.backend.ingest import LOG
+    monkeypatch.setattr(bank_app, "VOLUNTEER_DIR", tmp_path / "active")
+    (tmp_path / "active").mkdir()
+    (tmp_path / "active" / "P04.json").write_text(_json.dumps(
+        {"volunteer": "P04", "user_id": "cust_0001", "card": ["Send Rs 500 to Asha"]}))
+    assert client.get("/api/task").json()["card"] is None          # not logged in: no card
+    sid = login(client, "cust_0001")
+    assert client.get("/api/task").json()["card"] == ["Send Rs 500 to Asha"]
+    login(client, "cust_0002")
+    assert client.get("/api/task").json()["card"] is None          # someone else's card is never shown
+    paths = [e["data"]["path"] for e in LOG.read(sid) if e["type"] == "api_call"]
+    assert "/api/task" not in paths                                 # only volunteers would have it: a shortcut

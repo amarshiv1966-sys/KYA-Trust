@@ -55,6 +55,8 @@ Only clicks on elements with a `data-kya-id` are recorded.
 | `offset_x`, `offset_y` | number | Click position minus the element's centre. `0, 0` is the exact centre |
 | `press_ms` | int or null | Time between mouse-down and mouse-up. `null` when the browser fired a click with no press (typical of scripts) |
 
+A click with no pointer press behind it (a script's `el.click()`, or Enter/Space on a button) has no real position: `x`, `y` are the element's centre, `offset_x`, `offset_y` are `0`, and `press_ms` is `null`.
+
 ### `keystroke` (client)
 
 The key itself is **never** recorded. Password fields produce no events at all.
@@ -83,18 +85,21 @@ Sent after `telemetry.js` has flushed its buffer, just before the form's request
 | `fields_without_keys` | int | Filled fields that got no `keystroke` events (pasted, autofilled or set by a script) |
 | `paste_count` | int | Paste actions on this form |
 
+Password fields (`login.password`, `stepup.pin`) are left out of `fields_filled` and `fields_without_keys`, because they never produce key events.
+
 ### `api_call` (server)
 
-Written by the bank's middleware for **every** API request, from browsers and API-only clients alike.
+Written for **every** API request that carries a session, from browsers and API-only clients alike, at the moment it arrives. A browser session starts before login (our pages call `POST /api/session/start` on load), so the login page's own clicks and keys are in the same session as everything after it.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `method` | string | `GET`, `POST`, … |
 | `path` | string | For example `/api/transfer` |
 | `query` | string | Raw query string, `""` if none |
-| `status` | int | HTTP status the bank returned |
+| `status` | null | Always `null` for now: the event is written when the request **arrives**, before the response exists, so that a `transaction` event can point back to it |
 | `channel` | string | `browser` (request came with the session cookie from our pages) or `api` |
-| `headers` | object | Only these, raw: `user_agent`, `accept_language`, `signature_input`, `signature`, `content_digest`, `kya_mandate_id`, `idempotency_key`. Missing ones are `null` |
+| `headers` | object | Only these, raw: `user_agent`, `accept_language`, `signature_input`, `signature`, `content_digest`, `kya_mandate` (the mandate JWT), `kya_mandate_id`, `idempotency_key`. Missing ones are `null` |
+| `content_digest_ok` | bool or null | Whether the `Content-Digest` header matched the raw body when the request arrived. `null` if there was no such header. Recorded because `body` below has free-text fields removed, so a replay cannot recompute the hash |
 | `body` | object or null | The request body with every free-text field removed (names, notes). Amounts, ids and categories stay |
 
 The raw signature headers are kept so a replay can **re-verify** the signature from the log alone.
@@ -129,11 +134,12 @@ Written by the gate right after the `transaction` event and before scoring. It f
 | `history` | object | The account's past payments **before** this session: `payment_count`, `median_amount_paise`, `mad_amount_paise` (median absolute deviation), `payees_seen` (list of payee ids), `categories_seen` (list), `last_payment_ts_ms` (or null) |
 | `provenance` | object | `device_accounts_before`: how many other accounts this device logged into before now. `agent`: `null`, or `agent_id`, `public_key` (base64 Ed25519), `issuer`, `past_incidents` (int) from the registry |
 | `issuer_public_key` | string | The bank's mandate-issuer public key (base64), so the mandate can be verified offline |
+| `nonce_reused` | bool | True if the request's signed nonce was already used by this agent before this decision. The replay turns a valid signature into `replayed` (R02) from this |
 | `versions` | object | `policy_version`, `model_version` |
 
 ## 3. The `client` object
 
-Sent by the browser on every client event. The server fills it for API-only requests from the request itself. Coarse classes only: nothing that identifies a person.
+Sent by the browser on every client event. The server fills it for API-only requests from the request itself. A browser session's first event is the server's `session/start` record, written before the browser has sent anything, so **read device fields from the first event with `source: "client"`** and fall back to the first event only when there is none (API-only sessions). Coarse classes only: nothing that identifies a person.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -202,3 +208,7 @@ The allowed values of every state field, and the text of every reason code, live
 ## Change log
 
 - **v1 (22 Nov 2026):** first version.
+- **v1, 23 Nov 2026 (K6):** `api_call.status` is `null` (written on arrival). Sessions start at `/api/session/start`, before login. No change to any field name, so `schema_version` stays 1.
+- **v1, 23 Nov 2026 (K7):** `telemetry.js` sends client events. Clarified: clicks with no press, password fields in `form_submit` counts, and which event to read device fields from. No field changes.
+- **v1, 23 Nov 2026 (K8):** `api_call` gains `content_digest_ok` and the `kya_mandate` header (the token, signed by the agent's request signature). Signed agents send `KYA-Mandate` and `KYA-Mandate-Id`; see `kya/identity/signing.py`. Added fields only, so `schema_version` stays 1.
+- **v1, 23 Nov 2026 (K9):** the gate writes `transaction` and `decision_context` for every transfer, merchant payment and add-payee. `decision_context` gains `nonce_reused`. Added field only, so `schema_version` stays 1.

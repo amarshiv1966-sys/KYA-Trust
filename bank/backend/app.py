@@ -1,26 +1,56 @@
-"""The mock bank's API (K4 skeleton).
+"""The mock bank's API.
 
 Run:  uvicorn bank.backend.app:app --reload
 
-Browser sessions carry the cookie kya_sid. API-only clients send the same id
-in the header X-KYA-Session (the login response returns it).
+Browser sessions carry the cookie kya_sid. Our pages get it from
+/api/session/start before login, so the login page's own behaviour lands in
+the same session. API-only clients send the id in the header X-KYA-Session
+(the login response returns it).
+
+Every request with a known session is written to the session's timeline as an
+api_call event (bank/backend/ingest.py), and telemetry.js sends its batches to
+the WebSocket /ws/telemetry.
 
 For now transfers and merchant payments go straight to the ledger. In K9 the
 payment gate replaces execute_payment(): score first, then commit.
 """
 
 import csv
+import json
 import io
+import re
 import secrets
+from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+import jwt
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field, field_validator
 
 from bank.backend.db import connect, init_db, now_ms
+from bank.backend.ingest import ingest_batch, log_api_call
 from bank.backend.seed import check_password
+from kya.identity.keys import load_issuer_key, public_key_b64
+from kya.identity.mandates import issue_mandate
+from kya.identity.registry import RegistryError, get_agent, list_agents, register_agent
+from kya.schema import SchemaError
+from kya.score import score_session
+from bank.backend.gate import run_gate
 
 app = FastAPI(title="KYA-Trust mock bank")
+
+
+@app.exception_handler(RequestValidationError)
+async def readable_validation_error(request: Request, exc: RequestValidationError):
+    """FastAPI's default 422 is a list of dicts the page can't show. Send the
+    first problem as one sentence instead."""
+    err = exc.errors()[0] if exc.errors() else {}
+    msg = str(err.get("msg", "invalid request")).removeprefix("Value error, ")
+    field = err.get("loc", [""])[-1]
+    if msg.startswith(("Field required", "Input should")):
+        msg = f"{field}: {msg.lower()}"
+    return JSONResponse(status_code=422, content={"detail": msg})
 
 COOKIE = "kya_sid"
 HEADER = "X-KYA-Session"
@@ -48,9 +78,35 @@ class LoginBody(BaseModel):
 
 
 class PayeeBody(BaseModel):
-    name: str = Field(min_length=1, max_length=80)
-    account_number: str = Field(pattern=r"^\d{9,18}$")
-    ifsc: str = Field(pattern=r"^[A-Z]{4}0[A-Z0-9]{6}$")
+    """Accepts what people actually type: spaces or dashes in the account
+    number, IFSC in lower case. Each rule says in plain words what is wrong."""
+    name: str
+    account_number: str
+    ifsc: str
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v):
+        v = " ".join(v.split())
+        if not 2 <= len(v) <= 80:
+            raise ValueError("Enter the payee's name (2 to 80 characters)")
+        return v
+
+    @field_validator("account_number")
+    @classmethod
+    def _account(cls, v):
+        v = re.sub(r"[\s-]", "", v)
+        if not re.fullmatch(r"\d{9,18}", v):
+            raise ValueError("Account number must be 9 to 18 digits")
+        return v
+
+    @field_validator("ifsc")
+    @classmethod
+    def _ifsc(cls, v):
+        v = v.strip().upper()
+        if not re.fullmatch(r"[A-Z]{4}0[A-Z0-9]{6}", v):
+            raise ValueError("IFSC is 11 characters: 4 letters, a zero, then 6 letters or digits (e.g. KYAB0001234)")
+        return v
 
 
 class TransferBody(BaseModel):
@@ -65,36 +121,117 @@ class MerchantPayBody(BaseModel):
     currency: str = "INR"
 
 
+class AgentBody(BaseModel):
+    agent_id: str = Field(min_length=3, max_length=50)
+    public_key: str = Field(min_length=40, max_length=60)
+    issuer: str = Field(min_length=1, max_length=80)
+
+
+class MandateBody(BaseModel):
+    agent_id: str
+    merchant_categories: list[str] = Field(default_factory=list, max_length=20)
+    payees: list[str] = Field(default_factory=list, max_length=50)
+    max_per_txn_paise: int = Field(gt=0, strict=True)
+    max_total_paise: int = Field(gt=0, strict=True)
+    max_txn_per_day: int = Field(gt=0, le=100, strict=True)
+    expiry_days: int = Field(gt=0, le=90, strict=True)
+
+
 # ---------- who is calling ----------
 
-def current_session(request: Request, conn=Depends(get_db)):
-    """Find the logged-in session from the cookie or the header, or answer 401."""
-    sid = request.cookies.get(COOKIE) or request.headers.get(HEADER)
+def session_id_of(request):
+    return request.cookies.get(COOKIE) or request.headers.get(HEADER)
+
+
+def open_session(conn, sid):
+    """The session row if it exists and is not logged out (user may be None)."""
     if not sid:
-        raise HTTPException(401, "not logged in")
-    row = conn.execute(
-        "SELECT s.session_id, s.user_id, a.account_id FROM sessions s "
-        "JOIN accounts a ON a.user_id = s.user_id "
-        "WHERE s.session_id = ? AND s.ended_ms IS NULL", (sid,)).fetchone()
+        return None
+    row = conn.execute("SELECT * FROM sessions WHERE session_id = ? AND ended_ms IS NULL",
+                       (sid,)).fetchone()
+    return dict(row) if row else None
+
+
+async def current_session(request: Request, conn=Depends(get_db)):
+    """Find the logged-in session from the cookie or the header, or answer 401.
+    Also writes this request to the session's timeline as an api_call event."""
+    sid = session_id_of(request)
+    row = None
+    if sid:
+        row = conn.execute(
+            "SELECT s.session_id, s.user_id, a.account_id FROM sessions s "
+            "JOIN accounts a ON a.user_id = s.user_id "
+            "WHERE s.session_id = ? AND s.ended_ms IS NULL", (sid,)).fetchone()
     if row is None:
-        raise HTTPException(401, "session expired or unknown")
-    return dict(row)
+        raise HTTPException(401, "not logged in" if not sid else "session expired or unknown")
+    sess = dict(row)
+    # kept on the request so the payment gate can point back to this event
+    request.state.api_call = log_api_call(sess["session_id"], request, await request.body())
+    return sess
+
+
+async def logged_if_session(request: Request, conn=Depends(get_db)):
+    """For endpoints that don't need a login: still log the call if the
+    caller has a session."""
+    sess = open_session(conn, session_id_of(request))
+    if sess:
+        log_api_call(sess["session_id"], request, await request.body())
+    return sess
 
 
 # ---------- login ----------
 
+@app.post("/api/session/start")
+async def session_start(request: Request, response: Response, conn=Depends(get_db)):
+    """Our pages call this on load: reuse the open session, or start an
+    anonymous one (no user yet) so telemetry has somewhere to go.
+
+    Body {"anonymous": true} means the page is showing the login screen. If
+    the cookie still points to a logged-in session (a new tab, or someone
+    who never logged out), that session is ended and a fresh one starts, so
+    the login that follows binds the SAME session the recorder is on."""
+    sess = open_session(conn, request.cookies.get(COOKIE))
+    try:
+        wants_anonymous = bool((await request.json()).get("anonymous"))
+    except Exception:
+        wants_anonymous = False
+    if sess is not None and wants_anonymous and sess["user_id"] is not None:
+        conn.execute("UPDATE sessions SET ended_ms = ? WHERE session_id = ?", (now_ms(), sess["session_id"]))
+        sess = None
+    if sess is None:
+        sid = new_session_id()
+        device_id = request.cookies.get("kya_dev")
+        conn.execute("INSERT INTO sessions VALUES (?, NULL, ?, ?, ?, NULL)",
+                     (sid, device_id, "browser" if device_id else "api", now_ms()))
+        response.set_cookie(COOKIE, sid, httponly=True, samesite="strict")
+    else:
+        sid = sess["session_id"]
+    log_api_call(sid, request, await request.body())
+    return {"session_id": sid}
+
+
 @app.post("/api/login")
-def login(body: LoginBody, request: Request, response: Response, conn=Depends(get_db)):
+async def login(body: LoginBody, request: Request, response: Response, conn=Depends(get_db)):
+    # an anonymous session from /api/session/start becomes this user's session,
+    # so the typing on the login page stays in the same timeline
+    sess = open_session(conn, session_id_of(request))
+    if sess and sess["user_id"] is None:
+        log_api_call(sess["session_id"], request, await request.body())
+
     user = conn.execute("SELECT * FROM users WHERE username = ?", (body.username,)).fetchone()
     if user is None or not check_password(body.password, user["password_hash"]):
         raise HTTPException(401, "wrong username or password")
 
-    # our own pages send the device cookie; anything else counts as an API client
-    device_id = request.cookies.get("kya_dev")
-    channel = "browser" if device_id else "api"
-    sid = new_session_id()
-    conn.execute("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, NULL)",
-                 (sid, user["user_id"], device_id, channel, now_ms()))
+    if sess and sess["user_id"] is None:
+        sid = sess["session_id"]
+        conn.execute("UPDATE sessions SET user_id = ? WHERE session_id = ?", (user["user_id"], sid))
+    else:
+        # our own pages send the device cookie; anything else counts as an API client
+        device_id = request.cookies.get("kya_dev")
+        sid = new_session_id()
+        conn.execute("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, NULL)",
+                     (sid, user["user_id"], device_id, "browser" if device_id else "api", now_ms()))
+        log_api_call(sid, request, await request.body())
     response.set_cookie(COOKIE, sid, httponly=True, samesite="strict")
     return {"session_id": sid, "user_id": user["user_id"], "name": user["display_name"]}
 
@@ -119,8 +256,11 @@ def balance(sess=Depends(current_session), conn=Depends(get_db)):
 def statement_rows(conn, account_id, days):
     since = now_ms() - days * DAY_MS
     rows = conn.execute(
-        "SELECT txn_id, ts_ms, action, counterparty, category, amount_paise, balance_after "
-        "FROM ledger WHERE account_id = ? AND ts_ms >= ? ORDER BY txn_id DESC",
+        "SELECT l.txn_id, l.ts_ms, l.action, l.counterparty, l.category, l.amount_paise, l.balance_after, "
+        "COALESCE(m.name, p.name, CASE WHEN l.action = 'credit' THEN 'Salary' END, l.counterparty) AS name "
+        "FROM ledger l LEFT JOIN merchants m ON m.merchant_id = l.counterparty "
+        "LEFT JOIN payees p ON p.payee_id = l.counterparty "
+        "WHERE l.account_id = ? AND l.ts_ms >= ? ORDER BY l.ts_ms DESC, l.txn_id DESC",
         (account_id, since)).fetchall()
     return [dict(r) for r in rows]
 
@@ -139,9 +279,10 @@ def statements_download(range: int = 30, sess=Depends(current_session), conn=Dep
     rows = statement_rows(conn, sess["account_id"], range)
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["txn_id", "ts_ms", "action", "counterparty", "category", "amount_paise", "balance_after"])
+    writer.writerow(["txn_id", "ts_ms", "action", "counterparty", "name", "category", "amount_paise",
+                     "balance_after"])
     for r in rows:
-        writer.writerow([r["txn_id"], r["ts_ms"], r["action"], r["counterparty"], r["category"],
+        writer.writerow([r["txn_id"], r["ts_ms"], r["action"], r["counterparty"], r["name"], r["category"],
                          r["amount_paise"], r["balance_after"]])
     buf.seek(0)
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
@@ -156,70 +297,234 @@ def list_payees(sess=Depends(current_session), conn=Depends(get_db)):
 
 
 @app.get("/api/merchants")
-def list_merchants(conn=Depends(get_db)):
+def list_merchants(sess=Depends(logged_if_session), conn=Depends(get_db)):
     rows = conn.execute("SELECT merchant_id, name, category FROM merchants ORDER BY name").fetchall()
     return {"merchants": [dict(r) for r in rows]}
 
 
+# ---------- volunteer task card ----------
+
+VOLUNTEER_DIR = Path(__file__).resolve().parents[2] / "data" / "volunteer_active"
+
+
+@app.get("/api/task")
+def volunteer_task(request: Request, conn=Depends(get_db)):
+    """The task card for a volunteer who is being recorded right now
+    (written by tools/volunteer.py start), or {"card": null}.
+
+    Deliberately NOT written to the session log: only volunteer sessions
+    would contain it, and the model could learn "asked for a task card =
+    human" instead of real behaviour. Every logged-in page asks for it, so
+    it still cannot tell bots and people apart by its absence in the log."""
+    sid = session_id_of(request)
+    row = conn.execute("SELECT user_id FROM sessions WHERE session_id = ? AND ended_ms IS NULL",
+                       (sid,)).fetchone() if sid else None
+    if row is None or row["user_id"] is None or not VOLUNTEER_DIR.exists():
+        return {"card": None}
+    for f in VOLUNTEER_DIR.glob("P*.json"):
+        try:
+            a = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if a.get("user_id") == row["user_id"]:
+            return {"card": a.get("card"), "volunteer": a.get("volunteer")}
+    return {"card": None}
+
+
+# ---------- agents and mandates (K8) ----------
+
+@app.get("/api/issuer-key")
+def issuer_key():
+    """The bank's public mandate-issuer key, so anyone can check a mandate."""
+    return {"issuer": "kya-bank", "alg": "EdDSA", "public_key": public_key_b64(load_issuer_key())}
+
+
+@app.get("/api/agents")
+def agents(sess=Depends(logged_if_session), conn=Depends(get_db)):
+    return {"agents": list_agents(conn)}
+
+
+@app.post("/api/agents", status_code=201)
+def add_agent(body: AgentBody, sess=Depends(logged_if_session), conn=Depends(get_db)):
+    """An agent's developer registers its public key. This grants nothing by
+    itself: only a customer's mandate gives an agent any authority."""
+    try:
+        agent = register_agent(conn, body.agent_id, body.public_key, body.issuer)
+    except RegistryError as err:
+        raise HTTPException(409 if "already" in str(err) else 422, str(err)) from None
+    return {"agent_id": agent["agent_id"], "issuer": agent["issuer"]}
+
+
+def mandate_status(row, now):
+    if row["revoked"]:
+        return "revoked"
+    return "expired" if now >= row["expires_ms"] else "active"
+
+
+@app.get("/api/mandates")
+def my_mandates(sess=Depends(current_session), conn=Depends(get_db)):
+    now = now_ms()
+    rows = conn.execute("SELECT * FROM mandates WHERE user_id = ? ORDER BY created_ms DESC",
+                        (sess["user_id"],)).fetchall()
+    out = []
+    for r in rows:
+        claims = jwt_claims(r["token"])
+        out.append({"mandate_id": r["mandate_id"], "agent_id": r["agent_id"], "status": mandate_status(r, now),
+                    "consumed_paise": r["consumed_paise"], "max_total_paise": r["max_total_paise"],
+                    "max_per_txn_paise": claims["max_per_txn_paise"], "max_txn_per_day": claims["max_txn_per_day"],
+                    "merchant_categories": claims["merchant_categories"], "payees": claims["payees"],
+                    "expires_ms": r["expires_ms"], "token": r["token"]})
+    return {"mandates": out}
+
+
+def jwt_claims(token):
+    # our own token from our own table: reading the claims needs no check here
+    return jwt.decode(token, options={"verify_signature": False})
+
+
+@app.post("/api/mandates", status_code=201)
+def new_mandate(body: MandateBody, sess=Depends(current_session), conn=Depends(get_db)):
+    """The logged-in customer gives one agent a limited permission. The bank
+    signs it with its issuer key; the agent cannot make or widen one itself."""
+    if get_agent(conn, body.agent_id) is None:
+        raise HTTPException(404, "unknown agent")
+    if not body.merchant_categories and not body.payees:
+        raise HTTPException(422, "choose at least one category or payee")
+    if body.max_per_txn_paise > body.max_total_paise:
+        raise HTTPException(422, "the per-payment limit cannot be above the total")
+    known_cats = {r[0] for r in conn.execute("SELECT DISTINCT category FROM merchants")}
+    if set(body.merchant_categories) - known_cats:
+        raise HTTPException(422, "unknown merchant category")
+    merchants = {r[0] for r in conn.execute("SELECT merchant_id FROM merchants")}
+    own_payees = {r[0] for r in conn.execute("SELECT payee_id FROM payees WHERE account_id = ?",
+                                             (sess["account_id"],))}
+    if set(body.payees) - merchants - own_payees:
+        raise HTTPException(422, "payee is not a merchant or one of your payees")
+    actions = []
+    if body.merchant_categories or set(body.payees) & merchants:
+        actions.append("merchant_payment")
+    if set(body.payees) & own_payees:
+        actions.append("transfer")
+    mandate_id, token, claims = issue_mandate(
+        user_id=sess["user_id"], account_id=sess["account_id"], agent_id=body.agent_id, actions=actions,
+        payees=body.payees, merchant_categories=body.merchant_categories,
+        max_per_txn_paise=body.max_per_txn_paise, max_total_paise=body.max_total_paise,
+        max_txn_per_day=body.max_txn_per_day, expires_in_s=body.expiry_days * 86_400)
+    conn.execute("INSERT INTO mandates (mandate_id, user_id, account_id, agent_id, token, max_total_paise, "
+                 "consumed_paise, revoked, expires_ms, created_ms) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)",
+                 (mandate_id, sess["user_id"], sess["account_id"], body.agent_id, token,
+                  body.max_total_paise, claims["exp"] * 1000, now_ms()))
+    return {"mandate_id": mandate_id, "token": token, "actions": actions, "expires_ms": claims["exp"] * 1000}
+
+
+@app.post("/api/mandates/{mandate_id}/revoke")
+def revoke_mandate(mandate_id: str, sess=Depends(current_session), conn=Depends(get_db)):
+    cur = conn.execute("UPDATE mandates SET revoked = 1 WHERE mandate_id = ? AND user_id = ?",
+                       (mandate_id, sess["user_id"]))
+    if cur.rowcount == 0:
+        raise HTTPException(404, "no such mandate on your account")
+    return {"mandate_id": mandate_id, "status": "revoked"}
+
+
 # ---------- sensitive actions ----------
 
-@app.post("/api/payees")
-def add_payee(body: PayeeBody, sess=Depends(current_session), conn=Depends(get_db)):
+@app.post("/api/payees", status_code=202)
+def add_payee(body: PayeeBody, request: Request, sess=Depends(current_session), conn=Depends(get_db)):
+    """Adding a payee is a sensitive action: it goes through the gate too."""
     count = conn.execute("SELECT COUNT(*) FROM payees").fetchone()[0]
     payee_id = f"py_{count + 1:06d}"
-    conn.execute("INSERT INTO payees VALUES (?, ?, ?, ?, ?, ?)",
-                 (payee_id, sess["account_id"], body.name, body.account_number, body.ifsc, now_ms()))
-    return {"payee_id": payee_id}
+
+    def execute(conn, mandate_id, nonce):
+        conn.execute("INSERT INTO payees VALUES (?, ?, ?, ?, ?, ?)",
+                     (payee_id, sess["account_id"], body.name, body.account_number, body.ifsc, now_ms()))
+        return {"payee_id": payee_id}
+
+    return run_gate(conn, request, sess, action="add_payee", payee_id=payee_id, category=None,
+                    amount_paise=0, currency="INR", execute=execute)
 
 
-def execute_payment(conn, sess, action, counterparty, category, amount_paise):
-    """Move money out of the session's account. One ledger row, all or nothing.
+def debit(sess, action, counterparty, category, amount_paise):
+    """The money movement itself, run by the gate inside its BEGIN IMMEDIATE
+    transaction: check the balance, write one ledger row."""
 
-    BEGIN IMMEDIATE takes the write lock before reading the balance, so two
-    payments at the same moment cannot both spend the same money.
-    """
-    conn.execute("BEGIN IMMEDIATE")
-    try:
+    def execute(conn, mandate_id, nonce):
         bal = conn.execute("SELECT balance_paise FROM accounts WHERE account_id = ?",
                            (sess["account_id"],)).fetchone()["balance_paise"]
         if amount_paise > bal:
-            conn.execute("ROLLBACK")
             raise HTTPException(400, "insufficient balance")
         new_bal = bal - amount_paise
-        conn.execute("UPDATE accounts SET balance_paise = ? WHERE account_id = ?",
-                     (new_bal, sess["account_id"]))
+        conn.execute("UPDATE accounts SET balance_paise = ? WHERE account_id = ?", (new_bal, sess["account_id"]))
         cur = conn.execute(
             "INSERT INTO ledger (account_id, ts_ms, action, counterparty, category, amount_paise, "
-            "balance_after, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "balance_after, session_id, mandate_id, nonce) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (sess["account_id"], now_ms(), action, counterparty, category, -amount_paise, new_bal,
-             sess["session_id"]))
-        conn.execute("COMMIT")
-    except HTTPException:
-        raise
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
-    return {"status": "executed", "txn_id": cur.lastrowid, "balance_paise": new_bal}
+             sess["session_id"], mandate_id, nonce))
+        return {"txn_id": cur.lastrowid, "balance_paise": new_bal}
+
+    return execute
 
 
 @app.post("/api/transfer", status_code=202)
-def transfer(body: TransferBody, sess=Depends(current_session), conn=Depends(get_db)):
+def transfer(body: TransferBody, request: Request, sess=Depends(current_session), conn=Depends(get_db)):
     if body.currency != "INR":
         raise HTTPException(422, "only INR is supported")
     payee = conn.execute("SELECT payee_id FROM payees WHERE payee_id = ? AND account_id = ?",
                          (body.payee_id, sess["account_id"])).fetchone()
     if payee is None:
         raise HTTPException(404, "payee not on this account")
-    return execute_payment(conn, sess, "transfer", body.payee_id, None, body.amount_paise)
+    return run_gate(conn, request, sess, action="transfer", payee_id=body.payee_id, category=None,
+                    amount_paise=body.amount_paise, currency=body.currency,
+                    execute=debit(sess, "transfer", body.payee_id, None, body.amount_paise))
 
 
 @app.post("/api/merchant/pay", status_code=202)
-def merchant_pay(body: MerchantPayBody, sess=Depends(current_session), conn=Depends(get_db)):
+def merchant_pay(body: MerchantPayBody, request: Request, sess=Depends(current_session), conn=Depends(get_db)):
     if body.currency != "INR":
         raise HTTPException(422, "only INR is supported")
     merchant = conn.execute("SELECT category FROM merchants WHERE merchant_id = ?",
                             (body.merchant_id,)).fetchone()
     if merchant is None:
         raise HTTPException(404, "unknown merchant")
-    return execute_payment(conn, sess, "merchant_payment", body.merchant_id, merchant["category"],
-                           body.amount_paise)
+    return run_gate(conn, request, sess, action="merchant_payment", payee_id=body.merchant_id,
+                    category=merchant["category"], amount_paise=body.amount_paise, currency=body.currency,
+                    execute=debit(sess, "merchant_payment", body.merchant_id, merchant["category"],
+                                  body.amount_paise))
+
+
+# ---------- scoring API (read-only) ----------
+
+@app.post("/score")
+async def score(request: Request):
+    """Score a list of events. Reads nothing from the bank and writes nothing."""
+    try:
+        events = await request.json()
+    except ValueError:
+        raise HTTPException(400, "body must be a JSON list of events") from None
+    try:
+        return score_session(events)
+    except SchemaError as err:
+        raise HTTPException(422, f"malformed input: {err}") from None
+
+
+# ---------- telemetry ----------
+
+@app.websocket("/ws/telemetry")
+async def telemetry(ws: WebSocket):
+    """telemetry.js sends {"batch_id": ..., "events": [...]} and waits for
+    {"ack": batch_id, "kept": n} before a form is submitted."""
+    conn = connect()
+    try:
+        sess = open_session(conn, ws.cookies.get(COOKIE))
+    finally:
+        conn.close()
+    if sess is None:
+        await ws.close(code=4401)  # no session: call /api/session/start first
+        return
+    await ws.accept()
+    try:
+        while True:
+            msg = await ws.receive_json()
+            kept = ingest_batch(sess["session_id"], msg.get("events") if isinstance(msg, dict) else None)
+            await ws.send_json({"ack": msg.get("batch_id") if isinstance(msg, dict) else None, "kept": kept})
+    except WebSocketDisconnect:
+        pass
