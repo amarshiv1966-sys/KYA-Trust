@@ -6,8 +6,6 @@ The whole session and the last 10 seconds are both computed (suffix _last10).
 from kya.behaviour.features import behaviour_features
 from kya.schema import BEHAVIOUR_TYPES, evidence_status   # one shared rule; re-exported so tests keep importing it from here
 from kya.intent.features import intent_features, find_transaction
-# one shared definition of evidence_status (docs/schema.md section 4); re-exported here
-from kya.schema import evidence_status  # noqa: F401
 
 WINDOW_MS = 10000
 
