@@ -1,6 +1,7 @@
 """Fill decision_seq in data/labels.csv from the bank's raw logs (data/raw/<session_id>.jsonl).
 
-decision_seq = seq of the session's transaction event (docs/schema.md). Rows whose log
+decision_seq = seq of the session's transaction event (docs/schema.md). A read-only session
+has no transaction, so it is scored once at its last event (plan section 2). Rows whose log
 does not exist yet are left empty and counted, so you can re-run this later.
 """
 import csv
@@ -12,11 +13,15 @@ def decision_seq(session_id):
     path = ROOT / "data" / "raw" / f"{session_id}.jsonl"
     if not path.exists():
         return None
+    last = None
     for line in open(path):
+        if not line.strip():
+            continue
         e = json.loads(line)
         if e["type"] == "transaction":
             return e["seq"]
-    return None
+        last = e["seq"]
+    return last                     # read-only session: its last event
 
 
 def main():
